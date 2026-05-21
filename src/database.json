@@ -1,0 +1,26 @@
+[
+  {
+    "className": "Coca",
+    "name": "Lata de Coca-Cola",
+    "price": 5.50,
+    "image": "🥤",
+    "weight": "350ml",
+    "desc": "Refrigerante lata clássico"
+  },
+  {
+    "className": "Leite",
+    "name": "Leite Semi-desnatado Piá",
+    "price": 4.90,
+    "image": "🥛",
+    "weight": "1L",
+    "desc": "Leite UHT integral de alta qualidade"
+  },
+  {
+    "className": "Cafe",
+    "name": "Café Melitta Vácuo",
+    "price": 18.90,
+    "image": "☕",
+    "weight": "500g",
+    "desc": "Café torrado e moído tradicional"
+  }
+]
