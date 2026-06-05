@@ -1,26 +1,82 @@
 [
   {
-    "className": "Coca",
-    "name": "Lata de Coca-Cola",
-    "price": 5.50,
-    "image": "🥤",
-    "weight": "350ml",
-    "desc": "Refrigerante lata clássico"
+    "className": "Nescau",
+    "name": "Achocolatado Nescau",
+    "price": 9.90,
+    "image": "🍫",
+    "weight": "370g",
+    "desc": "Achocolatado em pó tradicional"
   },
   {
-    "className": "Leite",
-    "name": "Leite Semi-desnatado Piá",
-    "price": 4.90,
-    "image": "🥛",
-    "weight": "1L",
-    "desc": "Leite UHT integral de alta qualidade"
+    "className": "Pringles",
+    "name": "Batata Pringles Original",
+    "price": 14.50,
+    "image": "🥔",
+    "weight": "114g",
+    "desc": "Batata frita crocante original"
   },
   {
-    "className": "Cafe",
-    "name": "Café Melitta Vácuo",
-    "price": 18.90,
+    "className": "Pão de Forma",
+    "name": "Pão de Forma Tradicional",
+    "price": 7.49,
+    "image": "🍞",
+    "weight": "450g",
+    "desc": "Pão de forma fatiado macio"
+  },
+  {
+    "className": "Leite Condensado",
+    "name": "Leite Condensado Moça",
+    "price": 6.20,
+    "image": "🥫",
+    "weight": "395g",
+    "desc": "Leite condensado integral doce"
+  },
+  {
+    "className": "Cappuccino",
+    "name": "Cappuccino 3 Corações",
+    "price": 12.80,
     "image": "☕",
-    "weight": "500g",
-    "desc": "Café torrado e moído tradicional"
+    "weight": "200g",
+    "desc": "Mistura para cappuccino solúvel"
+  },
+  {
+    "className": "Enxaguante Bucal",
+    "name": "Enxaguante Bucal Colgate Plax",
+    "price": 19.90,
+    "image": "🧴",
+    "weight": "500ml",
+    "desc": "Enxaguante antisséptico refrescante"
+  },
+  {
+    "className": "Óleo de Soja",
+    "name": "Óleo de Soja Soya",
+    "price": 6.80,
+    "image": "🛢️",
+    "weight": "900ml",
+    "desc": "Óleo de soja refinado tipo 1"
+  },
+  {
+    "className": "Sabonete",
+    "name": "Sabonete em Barra Dove",
+    "price": 3.50,
+    "image": "🧼",
+    "weight": "90g",
+    "desc": "Sabonete hidratante clássico"
+  },
+  {
+    "className": "Feijão",
+    "name": "Feijão Carioca Kicaldo",
+    "price": 8.90,
+    "image": "🫘",
+    "weight": "1kg",
+    "desc": "Feijão carioca tipo 1"
+  },
+  {
+    "className": "Açúcar",
+    "name": "Açúcar Refinado União",
+    "price": 5.20,
+    "image": "🍬",
+    "weight": "1kg",
+    "desc": "Açúcar refinado extra fino"
   }
 ]

@@ -4,16 +4,32 @@ import db from './database.json';
 import './App.css';
 
 function App() {
-  const [modelUrl, setModelUrl] = useState('https://teachablemachine.withgoogle.com/models/7ISYm8EbG/');
+  const [modelUrl, setModelUrl] = useState('https://teachablemachine.withgoogle.com/models/MMzkgaxOA/');
   const [isModelLoaded, setIsModelLoaded] = useState(false);
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [cart, setCart] = useState([]);
   const [prediction, setPrediction] = useState(null);
   
-  // Navigation & Checkout States
-  const [activeTab, setActiveTab] = useState('scan'); // 'scan', 'cart', 'checkout', 'deals', 'profile'
-  const [lastScannedItem, setLastScannedItem] = useState(null);
+  // Roteamento e Estados de Conexão WebSocket
+  const [currentRoute, setCurrentRoute] = useState(window.location.pathname);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [isPaired, setIsPaired] = useState(false);
+
+  // Estados de navegação interna do App Celular
+  const [appTab, setAppTab] = useState('home'); // 'home', 'cart', 'checkout', 'profile'
+  const [pairedCartId, setPairedCartId] = useState(null); // 'cart-001' | 'cart-042' | 'cart-099' | null
+  const [deviceCartId, setDeviceCartId] = useState('cart-042'); // ID do carrinho que o totem representa
+  const [pairingCameraSource, setPairingCameraSource] = useState(null); // 'app' | null
+  const [lastScannedItems, setLastScannedItems] = useState([]);
   const [paymentMethod, setPaymentMethod] = useState('credit_card'); // 'credit_card', 'pix', 'wallet'
+  const [toastMessage, setToastMessage] = useState(null); // Mensagens de toast
+  const [cameraFailed, setCameraFailed] = useState(false); // Falha de inicialização da câmera
+
+  const AVAILABLE_CARTS = [
+    { id: 'cart-001', name: 'Carrinho #001', color: '#0ea5e9', emoji: '🔵' },
+    { id: 'cart-042', name: 'Carrinho #042', color: '#a855f7', emoji: '🟣' },
+    { id: 'cart-099', name: 'Carrinho #099', color: '#14b8a6', emoji: '🟢' }
+  ];
   
   // Checkout Form States
   const [cardName, setCardName] = useState('Sarah J. Miller');
@@ -22,38 +38,311 @@ function App() {
   const [cardCvv, setCardCvv] = useState('***');
   const [saveCardDetails, setSaveCardDetails] = useState(true);
 
+  // Refs
   const videoRef = useRef(null);
   const modelRef = useRef(null);
   const requestRef = useRef(null);
-  const cooldownRef = useRef(false);
+  const cooldownsRef = useRef({});
   const isActiveRef = useRef(false);
   const accumulatorsRef = useRef({});
-  const notificationTimeoutRef = useRef(null);
   const streamRef = useRef(null);
   const cameraSessionIdRef = useRef(0);
+  const wsRef = useRef(null);
 
+  // Refs para a câmera de pareamento por QR Code no Celular
+  const pairingVideoRef = useRef(null);
+  const pairingStreamRef = useRef(null);
+  const pairingRequestRef = useRef(null);
+  const pairingCanvasRef = useRef(null);
+  const debugTextRef = useRef(null);
+  const pairingSessionIdRef = useRef(0);
+  const isPairingActiveRef = useRef(false);
+
+  // Monitor de popstate para roteamento nativo
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentRoute(window.location.pathname);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // Gerenciador de conexão WebSocket unificado
+  useEffect(() => {
+    const isApp = currentRoute.startsWith('/app') || currentRoute.startsWith('/mobile');
+    let targetCartId = null;
+
+    if (isApp) {
+      const params = new URLSearchParams(window.location.search);
+      targetCartId = params.get('cartId') || pairedCartId;
+    } else {
+      targetCartId = deviceCartId;
+    }
+
+    if (!targetCartId) {
+      setWsConnected(false);
+      setIsPaired(false);
+      return;
+    }
+
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+    console.log(`[WebSocket] Conectando a ${wsUrl} para cartId: ${targetCartId}`);
+
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setWsConnected(true);
+      if (isApp) {
+        ws.send(JSON.stringify({ type: 'register_phone', cartId: targetCartId }));
+      } else {
+        ws.send(JSON.stringify({ type: 'register_cart', cartId: targetCartId }));
+      }
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log('[WebSocket] Mensagem recebida:', data);
+
+        switch (data.type) {
+          case 'cart_paired':
+            setIsPaired(true);
+            setPairedCartId(data.cartId);
+            showToast(`🎉 Conectado ao carrinho ${AVAILABLE_CARTS.find(c => c.id === data.cartId)?.name || data.cartId}!`);
+            break;
+          case 'user_connected':
+            setIsPaired(true);
+            setPairedCartId(targetCartId);
+            showToast('📱 Cliente conectado com sucesso ao totem!');
+            break;
+          case 'user_disconnected':
+            setIsPaired(false);
+            setPairedCartId(null);
+            showToast('🔌 Cliente desconectou do carrinho.');
+            break;
+          case 'cart_disconnected':
+            setIsPaired(false);
+            setPairedCartId(null);
+            showToast('🔌 O totem do carrinho foi desconectado.');
+            break;
+          case 'product_scanned':
+            if (isApp) {
+              addToCart(data.item);
+              setLastScannedItems(prev => {
+                if (prev.some(x => x.className === data.item.className)) return prev;
+                return [...prev, data.item];
+              });
+              setTimeout(() => {
+                setLastScannedItems(prev => prev.filter(x => x.className !== data.item.className));
+              }, 4000);
+              showToast(`🛒 ${data.item.name} adicionado ao carrinho!`);
+            }
+            break;
+        }
+      } catch (err) {
+        console.error('[WebSocket] Erro ao analisar mensagem:', err);
+      }
+    };
+
+    ws.onclose = () => {
+      setWsConnected(false);
+      setIsPaired(false);
+      console.log('[WebSocket] Conexão fechada.');
+    };
+
+    ws.onerror = (err) => {
+      console.error('[WebSocket] Erro na conexão:', err);
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, [currentRoute, deviceCartId, pairedCartId, window.location.search]);
+
+  // Carregar Modelo Teachable Machine
   useEffect(() => {
     if (modelUrl) {
       loadModel();
     }
   }, [modelUrl]);
 
-  // Gerencia ativação/desativação automática da câmera ao mudar de aba
-  useEffect(() => {
-    if (activeTab === 'scan' && isModelLoaded) {
-      startCamera();
-    } else {
-      stopCamera();
-    }
-    return () => {
-      stopCamera();
-    };
-  }, [activeTab, isModelLoaded]);
+  const showToast = (message) => {
+    setToastMessage(message);
+    if (window.toastTimeout) clearTimeout(window.toastTimeout);
+    window.toastTimeout = setTimeout(() => {
+      setToastMessage(null);
+    }, 4500);
+  };
 
-  // Load the Teachable Machine model
+  const stopAllCameras = () => {
+    cameraSessionIdRef.current += 1;
+    isActiveRef.current = false;
+    cancelAnimationFrame(requestRef.current);
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current && videoRef.current.srcObject) {
+      videoRef.current.srcObject = null;
+    }
+    setPrediction(null);
+
+    pairingSessionIdRef.current += 1;
+    isPairingActiveRef.current = false;
+    cancelAnimationFrame(pairingRequestRef.current);
+    if (pairingStreamRef.current) {
+      pairingStreamRef.current.getTracks().forEach(track => track.stop());
+      pairingStreamRef.current = null;
+    }
+    if (pairingVideoRef.current && pairingVideoRef.current.srcObject) {
+      pairingVideoRef.current.srcObject = null;
+    }
+  };
+
+  // Desativa câmeras ao desmontar o componente
+  useEffect(() => {
+    return () => {
+      stopAllCameras();
+    };
+  }, []);
+
+  const startTeachableCamera = async (sessionId) => {
+    setCameraFailed(false);
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      console.error("API de mídia não suportada pelo navegador.");
+      setCameraFailed(true);
+      return;
+    }
+
+    try {
+      isActiveRef.current = true;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } }
+      });
+
+      if (cameraSessionIdRef.current !== sessionId || !isActiveRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+
+      streamRef.current = stream;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        setIsCameraActive(true);
+        await videoRef.current.play().catch(e => console.log("Video play interrupted:", e));
+        
+        if (cameraSessionIdRef.current !== sessionId || !isActiveRef.current) {
+          stream.getTracks().forEach(track => track.stop());
+          streamRef.current = null;
+          videoRef.current.srcObject = null;
+          return;
+        }
+
+        cancelAnimationFrame(requestRef.current);
+        requestRef.current = requestAnimationFrame(loop);
+      } else {
+        stream.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+        isActiveRef.current = false;
+        setIsCameraActive(false);
+      }
+    } catch (err) {
+      console.error("Erro ao iniciar Teachable Camera:", err);
+      if (cameraSessionIdRef.current === sessionId) {
+        isActiveRef.current = false;
+        setIsCameraActive(false);
+        setCameraFailed(true);
+      }
+    }
+  };
+
+  const startPairingCamera = async (sessionId) => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      console.error("API de mídia não suportada para pareamento.");
+      return;
+    }
+
+    const targetVideo = pairingVideoRef.current;
+    if (!targetVideo) {
+      console.warn("Elemento de vídeo não pronto para pareamento");
+      return;
+    }
+
+    try {
+      isPairingActiveRef.current = true;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } }
+      });
+
+      if (pairingSessionIdRef.current !== sessionId || !isPairingActiveRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+
+      pairingStreamRef.current = stream;
+      targetVideo.srcObject = stream;
+      targetVideo.setAttribute("playsinline", true);
+      await targetVideo.play().catch(e => console.log("Pairing play interrupted:", e));
+
+      if (pairingSessionIdRef.current !== sessionId || !isPairingActiveRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        pairingStreamRef.current = null;
+        targetVideo.srcObject = null;
+        return;
+      }
+
+      cancelAnimationFrame(pairingRequestRef.current);
+      pairingRequestRef.current = requestAnimationFrame(() => pairingLoop(targetVideo));
+    } catch (err) {
+      console.error("Erro ao iniciar câmera de pareamento:", err);
+      if (pairingSessionIdRef.current === sessionId) {
+        isPairingActiveRef.current = false;
+        if (debugTextRef.current) {
+          debugTextRef.current.innerText = `Erro de Câmera: ${err.name || err.message}`;
+        }
+      }
+    }
+  };
+
+  // Gerencia ativação e desligamento de câmeras baseado na conexão real-time
+  useEffect(() => {
+    stopAllCameras();
+    const isApp = currentRoute.startsWith('/app') || currentRoute.startsWith('/mobile');
+
+    if (!isApp) {
+      if (isPaired && pairedCartId === deviceCartId) {
+        cameraSessionIdRef.current += 1;
+        const sessionId = cameraSessionIdRef.current;
+        const timer = setTimeout(() => {
+          if (!cameraFailed) {
+            startTeachableCamera(sessionId);
+          }
+        }, 50);
+        return () => clearTimeout(timer);
+      }
+    } else {
+      if (appTab === 'home' && !isPaired && pairingCameraSource === 'app') {
+        pairingSessionIdRef.current += 1;
+        const sessionId = pairingSessionIdRef.current;
+        const timer = setTimeout(() => {
+          startPairingCamera(sessionId);
+        }, 50);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [currentRoute, isPaired, pairedCartId, deviceCartId, appTab, pairingCameraSource, cameraFailed]);
+
+  const handleRetryCamera = () => {
+    setCameraFailed(false);
+    cameraSessionIdRef.current += 1;
+    startTeachableCamera(cameraSessionIdRef.current);
+  };
+
   const loadModel = async () => {
     if (!modelUrl) return;
-    
     try {
       const URL = modelUrl.endsWith('/') ? modelUrl : modelUrl + '/';
       const modelURL = URL + 'model.json';
@@ -63,91 +352,112 @@ function App() {
       setIsModelLoaded(true);
     } catch (error) {
       console.error(error);
-      alert("Erro ao carregar o modelo. Verifique se o link está correto.");
+      showToast("❌ Erro ao carregar o modelo. Verifique o link.");
     }
   };
 
-  // Start the webcam
-  const startCamera = async () => {
-    if (isActiveRef.current) return;
-    
-    cameraSessionIdRef.current += 1;
-    const thisSessionId = cameraSessionIdRef.current;
-    
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      try {
-        isActiveRef.current = true;
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-        
-        // Se a sessão mudou ou a câmera foi desativada durante a requisição, limpa e aborta
-        if (cameraSessionIdRef.current !== thisSessionId || !isActiveRef.current) {
-          stream.getTracks().forEach(track => track.stop());
-          return;
+  const handlePairSuccess = (detectedCartId) => {
+    window.history.pushState({}, '', `/app?cartId=${detectedCartId}`);
+    setCurrentRoute(`/app`);
+    setPairedCartId(detectedCartId);
+    setIsPaired(true);
+    showToast(`🎉 Conectado com sucesso ao ${AVAILABLE_CARTS.find(c => c.id === detectedCartId)?.name || detectedCartId}!`);
+  };
+
+  const pairingLoop = (video) => {
+    if (!isPairingActiveRef.current || !video || video.paused || video.ended || !pairingStreamRef.current || !video.srcObject) {
+      return;
+    }
+
+    try {
+      if (video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth > 0 && video.videoHeight > 0) {
+        if (!pairingCanvasRef.current) {
+          pairingCanvasRef.current = document.createElement('canvas');
         }
+        const canvas = pairingCanvasRef.current;
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          
+          if (!window.scanFrameCount) window.scanFrameCount = 0;
+          window.scanFrameCount++;
 
-        streamRef.current = stream;
-        
-        // Wait a brief tick to ensure the DOM has rendered the video element
-        setTimeout(() => {
-          if (cameraSessionIdRef.current !== thisSessionId || !isActiveRef.current) {
-            stream.getTracks().forEach(track => track.stop());
-            if (streamRef.current === stream) {
-              streamRef.current = null;
-            }
-            return;
+          if (debugTextRef.current) {
+            debugTextRef.current.innerText = `Library: ${window.jsQR ? "✓ jsQR" : "❌ Carregando..."} | Frames: ${window.scanFrameCount}`;
           }
 
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-            setIsCameraActive(true);
-            videoRef.current.play().catch(e => console.error("Error playing video:", e));
-            // Start predicting loop
-            cancelAnimationFrame(requestRef.current);
-            requestRef.current = requestAnimationFrame(loop);
-          } else {
-            // If component was unmounted during permission prompt
-            stream.getTracks().forEach(track => track.stop());
-            if (streamRef.current === stream) {
-              streamRef.current = null;
+          if (window.jsQR) {
+            const code = window.jsQR(imageData.data, imageData.width, imageData.height, {
+              inversionAttempts: "attemptBoth",
+            });
+
+            if (code && code.data) {
+              console.log("QR Code detectado:", code.data);
+              const foundCart = AVAILABLE_CARTS.find(c => code.data.includes(c.id));
+              if (foundCart) {
+                handlePairSuccess(foundCart.id);
+                return;
+              }
             }
-            isActiveRef.current = false;
-            setIsCameraActive(false);
           }
-        }, 100);
-      } catch (err) {
-        console.error("Erro ao acessar a câmera: ", err);
-        if (cameraSessionIdRef.current === thisSessionId) {
-          isActiveRef.current = false;
-          setIsCameraActive(false);
         }
       }
+    } catch (err) {
+      console.error("Erro ao processar frame do QR code:", err);
     }
+
+    pairingRequestRef.current = requestAnimationFrame(() => pairingLoop(video));
   };
 
-  const stopCamera = () => {
-    cameraSessionIdRef.current += 1; // Invalida qualquer requisição de câmera em andamento
-    isActiveRef.current = false;
-    setIsCameraActive(false);
-    cancelAnimationFrame(requestRef.current);
-    
-    // Parar todos os tracks usando streamRef (independente de videoRef já ser nulo)
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    
-    // Garantir limpeza no elemento de vídeo se ele ainda estiver montado
-    if (videoRef.current && videoRef.current.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach(track => track.stop());
-      videoRef.current.srcObject = null;
-    }
-    setPrediction(null);
+  const toggleAppPairingScanner = () => {
+    setPairingCameraSource(prev => prev === 'app' ? null : 'app');
+  };
+
+  const handleQrFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        if (window.jsQR) {
+          const code = window.jsQR(imageData.data, imageData.width, imageData.height, {
+            inversionAttempts: "attemptBoth",
+          });
+          if (code && code.data) {
+            console.log("QR Code detectado via upload:", code.data);
+            const foundCart = AVAILABLE_CARTS.find(c => code.data.includes(c.id));
+            if (foundCart) {
+              handlePairSuccess(foundCart.id);
+            } else {
+              showToast("⚠️ Código QR detectado, mas não corresponde a nenhum carrinho ativo.");
+            }
+          } else {
+            showToast("⚠️ Não foi possível encontrar nenhum QR Code na imagem.");
+          }
+        } else {
+          showToast("⏳ Biblioteca de leitura de QR Code ainda não carregada. Tente novamente.");
+        }
+      };
+      img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
   };
 
   const loop = async () => {
     try {
       if (!isActiveRef.current) return;
-      
       if (videoRef.current && modelRef.current && videoRef.current.readyState >= 2) {
         await predict();
       }
@@ -161,76 +471,61 @@ function App() {
 
   const predict = async () => {
     if (!modelRef.current || !videoRef.current) return;
-    
-    // Make prediction
     const predictions = await modelRef.current.predict(videoRef.current);
-    
-    // Find the highest probability prediction
     const bestPrediction = predictions.reduce((prev, current) => {
       return (prev.probability > current.probability) ? prev : current;
     });
-
     setPrediction(bestPrediction);
 
-    // If confidence is high (> 75%) and not in cooldown
-    if (bestPrediction.probability > 0.75 && !cooldownRef.current) {
-      const className = bestPrediction.className.trim();
-      
-      if (className.toLowerCase() === 'fundo') {
-        // Reduzir acumuladores se estivermos vendo apenas o fundo
-        Object.keys(accumulatorsRef.current).forEach(key => {
-          accumulatorsRef.current[key] = Math.max(0, accumulatorsRef.current[key] - 1);
-        });
-      } else {
-        // Incrementa acumulador da classe detectada
-        accumulatorsRef.current[className] = (accumulatorsRef.current[className] || 0) + 1;
-        
-        // Reduz acumuladores das outras classes para evitar falsos positivos
-        Object.keys(accumulatorsRef.current).forEach(key => {
-          if (key !== className) {
-            accumulatorsRef.current[key] = Math.max(0, accumulatorsRef.current[key] - 1);
-          }
-        });
+    const isBackgroundBest = bestPrediction.className.trim().toLowerCase() === 'fundo' && bestPrediction.probability > 0.65;
 
-        // Requer 5 frames detectados para confirmar
-        if (accumulatorsRef.current[className] >= 5) {
-          const dbItem = db.find(item => item.className.toLowerCase() === className.toLowerCase());
-          if (dbItem) {
+    predictions.forEach(pred => {
+      const className = pred.className.trim();
+      const probability = pred.probability;
+      const dbItem = db.find(item => item.className.toLowerCase() === className.toLowerCase());
+
+      if (dbItem) {
+        const inCooldown = cooldownsRef.current[dbItem.className];
+        if (probability > 0.20 && !inCooldown) {
+          accumulatorsRef.current[dbItem.className] = (accumulatorsRef.current[dbItem.className] || 0) + 1;
+          if (accumulatorsRef.current[dbItem.className] >= 3) {
             triggerProductScanned(dbItem);
           }
+        } else if (probability < 0.10) {
+          accumulatorsRef.current[dbItem.className] = Math.max(0, (accumulatorsRef.current[dbItem.className] || 0) - 0.5);
         }
       }
-    } else {
-      // Se a probabilidade cair muito ou estiver em cooldown, reduz lentamente
-      if (bestPrediction.probability <= 0.5) {
-        Object.keys(accumulatorsRef.current).forEach(key => {
-          accumulatorsRef.current[key] = Math.max(0, accumulatorsRef.current[key] - 1);
-        });
-      }
+    });
+
+    if (isBackgroundBest) {
+      Object.keys(accumulatorsRef.current).forEach(key => {
+        accumulatorsRef.current[key] = Math.max(0, accumulatorsRef.current[key] - 1);
+      });
     }
   };
 
-  // Helper to handle product scan addition (from both Camera and Simulator)
   const triggerProductScanned = (item) => {
-    addToCart(item);
-    setLastScannedItem(item);
-    
-    // Set cooldown
-    cooldownRef.current = true;
-    accumulatorsRef.current = {}; // Limpa os acumuladores após registrar a compra
-    
-    if (notificationTimeoutRef.current) {
-      clearTimeout(notificationTimeoutRef.current);
+    // Se estiver conectado a um socket, envia o produto em tempo real para o celular
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'product_scanned', item }));
     }
+
+    // Exibe notificação local no visor do totem
+    setLastScannedItems(prev => {
+      if (prev.some(x => x.className === item.className)) return prev;
+      return [...prev, item];
+    });
     
-    // Keep bottom sheet notification open for 4 seconds, or until next scan
-    notificationTimeoutRef.current = setTimeout(() => {
-      setLastScannedItem(null);
+    cooldownsRef.current[item.className] = true;
+    accumulatorsRef.current[item.className] = 0;
+    
+    setTimeout(() => {
+      setLastScannedItems(prev => prev.filter(x => x.className !== item.className));
     }, 4000);
 
     setTimeout(() => {
-      cooldownRef.current = false;
-    }, 3000); // 3 seconds cooldown
+      cooldownsRef.current[item.className] = false;
+    }, 3000);
   };
 
   const addToCart = (item) => {
@@ -263,533 +558,733 @@ function App() {
 
   const clearCart = () => {
     setCart([]);
-    setLastScannedItem(null);
+    setLastScannedItems([]);
   };
 
-  // Simulated scan button click
-  const simulateScan = (className) => {
-    const dbItem = db.find(item => item.className === className);
-    if (dbItem) {
-      triggerProductScanned(dbItem);
-      // Automatically switch to Scan tab so the user can see the scan overlay card
-      setActiveTab('scan');
-    }
-  };
-
-  // Calculate totals
+  // Cálculo de totais
   const subtotal = cart.reduce((acc, item) => acc + (item.price * item.qty), 0);
-  const tax = subtotal * 0.06; // 6% simulated tax
+  const tax = subtotal * 0.06;
   const total = subtotal + tax;
   const totalItemsCount = cart.reduce((acc, item) => acc + item.qty, 0);
 
   const handleCheckoutSubmit = (e) => {
     e.preventDefault();
-    alert(`Pagamento de R$ ${total.toFixed(2).replace('.', ',')} realizado com sucesso!\nObrigado por comprar no VisionCart. Compra Sem Filas!`);
+    showToast(`🎉 Pagamento de R$ ${total.toFixed(2).replace('.', ',')} realizado com sucesso! Compra Sem Filas!`);
     clearCart();
-    setActiveTab('scan');
+    
+    // Desconecta o celular do totem
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'disconnect_request' }));
+    }
+
+    // Retorna para a home desconectado
+    window.history.pushState({}, '', '/app');
+    setCurrentRoute('/app');
+    setPairedCartId(null);
+    setIsPaired(false);
+    setAppTab('home');
   };
 
+  const handleDisconnect = () => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'disconnect_request' }));
+    }
+    window.history.pushState({}, '', '/app');
+    setCurrentRoute('/app');
+    setPairedCartId(null);
+    setIsPaired(false);
+    clearCart();
+    setAppTab('home');
+    showToast("🔌 Carrinho despareado com sucesso.");
+  };
+
+  const isApp = currentRoute.startsWith('/app') || currentRoute.startsWith('/mobile');
+
   return (
-    <div className="app-layout">
-      {/* SIMULATOR PANEL (Left Side, for development & easy testing) */}
-      <div className="simulator-panel glass-panel">
-        <h3>Simulador de Compras</h3>
-        <p className="simulator-desc">
-          Use esta área lateral para simular o escaneamento de produtos caso sua webcam não esteja ativa ou você não tenha os itens físicos por perto.
-        </p>
-
-        <div className="sim-control-box">
-          <span className="sim-control-title">Simular Câmera</span>
-          <div className="sim-btn-group">
-            {!isCameraActive ? (
-              <button className="btn-sim-option scan" onClick={startCamera}>Ligar Câmera</button>
-            ) : (
-              <button className="btn-sim-option clear" onClick={stopCamera}>Desligar Câmera</button>
-            )}
-          </div>
+    <div className="app-container">
+      {toastMessage && (
+        <div className="custom-toast glass-panel">
+          <span className="toast-text">{toastMessage}</span>
         </div>
+      )}
 
-        <div className="simulator-actions-grid">
-          {db.map(item => (
-            <div key={item.className} className="btn-simulator-item">
-              <div className="simulator-item-left">
-                <span>{item.image}</span>
-                <div>
-                  <div style={{fontWeight: 700}}>{item.name}</div>
-                  <div style={{fontSize: '0.7rem', color: 'var(--text-secondary)'}}>R$ {item.price.toFixed(2)}</div>
-                </div>
+      {/* RENDER MODO 1: MOBILE APP CELULAR */}
+      {isApp ? (
+        <div className="app-view-container slide-in">
+          <div className="app-mobile-shell">
+            {/* Header Mobile */}
+            <header className="app-header glass-panel mobile-header">
+              <div className="header-logo" onClick={() => navigate('/app')}>
+                <span className="logo-emoji">📱</span>
+                <span className="logo-text">VisionCart Mobile</span>
               </div>
+              {isPaired && (
+                <div className="header-status">
+                  <span className="sync-badge" style={{ borderColor: AVAILABLE_CARTS.find(c => c.id === pairedCartId)?.color + '40', color: AVAILABLE_CARTS.find(c => c.id === pairedCartId)?.color, backgroundColor: AVAILABLE_CARTS.find(c => c.id === pairedCartId)?.color + '15', margin: 0 }}>
+                    <span className="sync-indicator pulse-dot" style={{ backgroundColor: AVAILABLE_CARTS.find(c => c.id === pairedCartId)?.color }}></span>
+                    {AVAILABLE_CARTS.find(c => c.id === pairedCartId)?.name}
+                  </span>
+                </div>
+              )}
+            </header>
+
+            {/* Menu de Abas Mobile */}
+            <div className="app-mobile-navbar glass-panel">
               <button 
-                className="btn-sim-action"
-                onClick={() => simulateScan(item.className)}
+                className={`app-nav-item ${appTab === 'home' ? 'active' : ''}`}
+                onClick={() => setAppTab('home')}
               >
-                Escanear
+                🏠 Início
+              </button>
+              <button 
+                className={`app-nav-item ${appTab === 'cart' ? 'active' : ''}`}
+                onClick={() => setAppTab('cart')}
+              >
+                🛒 Carrinho
+                {isPaired && cart.length > 0 && <span className="app-badge-count">{totalItemsCount}</span>}
+              </button>
+              <button 
+                className={`app-nav-item ${appTab === 'checkout' ? 'active' : ''}`}
+                onClick={() => setAppTab('checkout')}
+              >
+                💳 Pagamento
+              </button>
+              <button 
+                className={`app-nav-item ${appTab === 'profile' ? 'active' : ''}`}
+                onClick={() => setAppTab('profile')}
+              >
+                👤 Perfil
               </button>
             </div>
-          ))}
-        </div>
 
-        <button 
-          className="btn-cart-clear" 
-          onClick={clearCart}
-          style={{marginTop: '1rem', width: '100%', border: '1px solid var(--glass-border)', padding: '0.5rem', borderRadius: '10px'}}
-        >
-          Esvaziar Carrinho
-        </button>
-      </div>
+            {/* Conteúdo Mobile */}
+            <div className="app-mobile-content">
+              {appTab === 'home' && (
+                <div className="app-home-tab slide-in">
+                  {!isPaired ? (
+                    <div className="pairing-container glass-panel">
+                      {pairingCameraSource === 'app' ? (
+                        <div className="app-pairing-camera-view">
+                          <div className="pairing-header">
+                            <span className="pairing-device-icon">📸</span>
+                            <h2>Escanear QR do Carrinho</h2>
+                            <p>Aponte a câmera do seu celular para o QR Code exibido no monitor do Carrinho Inteligente.</p>
+                          </div>
 
-      {/* SMARTPHONE FRAME CONTAINER */}
-      <div className="phone-frame">
-        <div className="phone-notch">
-          <div className="phone-notch-camera"></div>
-        </div>
-        
-        <div className="phone-screen">
-          
-          {/* Status Bar */}
-          <div className="phone-status-bar">
-            <span>10:09 AM</span>
-            <div className="status-icons">
-              <span>📶</span>
-              <span>🛜</span>
-              <div className="status-battery"></div>
+                          <div className="app-camera-viewport">
+                            <video 
+                              ref={pairingVideoRef} 
+                              autoPlay 
+                              playsInline 
+                              muted 
+                              className="app-camera-feed active"
+                            />
+                            <div className="qr-scanner-overlay">
+                              <div className="scanner-laser-line"></div>
+                              <div className="scanner-target-corners"></div>
+                              <div ref={debugTextRef} className="scanner-debug-info">Aguardando câmera...</div>
+                            </div>
+                          </div>
+
+                          <div className="camera-upload-backup" style={{ marginTop: '1rem', width: '100%' }}>
+                            <input 
+                              type="file" 
+                              accept="image/*" 
+                              id="app-qr-upload" 
+                              style={{ display: 'none' }} 
+                              onChange={handleQrFileUpload} 
+                            />
+                            <label htmlFor="app-qr-upload" className="btn-action-secondary upload-backup-btn" style={{ width: '100%', display: 'block', textAlign: 'center' }}>
+                              📁 Enviar Foto do QR Code (Bypass)
+                            </label>
+                          </div>
+
+                          <button 
+                            className="btn-action-secondary"
+                            onClick={() => setPairingCameraSource(null)}
+                            style={{marginTop: '1.5rem', width: '100%', borderRadius: '12px'}}
+                          >
+                            Voltar para os Meus QR Codes
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="pairing-header">
+                            <span className="pairing-device-icon">📟</span>
+                            <h2>Sincronizar com um Carrinho</h2>
+                            <p>Selecione um dos carrinhos disponíveis abaixo para se conectar ou abra a câmera do celular para ler o QR Code da tela.</p>
+                          </div>
+
+                          <div className="pairing-instructions-box">
+                            <h4>Opção 1: Conectar Instantaneamente</h4>
+                            <p>Clique em conectar em um dos carrinhos de simulação abaixo:</p>
+                          </div>
+
+                          <div className="multi-qrcode-container">
+                            {AVAILABLE_CARTS.map(c => (
+                              <div key={c.id} className="qrcode-card glass-panel" style={{ borderTop: `3px solid ${c.color}` }}>
+                                <div className="qrcode-card-header">
+                                  <span className="qrcode-card-emoji">{c.emoji}</span>
+                                  <span className="qrcode-card-title">{c.name}</span>
+                                </div>
+                                <div className="pairing-cart-code" style={{ fontSize: '0.85rem', padding: '2px 8px', marginTop: '6px', color: c.color, backgroundColor: c.color + '15' }}>{c.id}</div>
+                                
+                                <button
+                                  className="btn-action-primary btn-pair-device-small"
+                                  style={{ backgroundColor: c.color, color: '#060913', fontSize: '0.85rem', padding: '6px 12px', marginTop: '10px' }}
+                                  onClick={() => {
+                                    window.history.pushState({}, '', `/app?cartId=${c.id}`);
+                                    setCurrentRoute(`/app`);
+                                    setPairedCartId(c.id);
+                                  }}
+                                >
+                                  Conectar
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="pairing-instructions-box" style={{marginTop: '1.5rem'}}>
+                            <h4>Opção 2: Usar Câmera do Celular</h4>
+                            <p>Aponte a câmera para o QR Code exibido no monitor do carrinho inteligente.</p>
+                          </div>
+
+                          <button 
+                            className="btn-action-primary btn-pair-device"
+                            onClick={toggleAppPairingScanner}
+                          >
+                            📷 Escanear QR Code do Totem
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="app-welcome-banner glass-panel" style={{ borderLeft: `6px solid ${AVAILABLE_CARTS.find(c => c.id === pairedCartId)?.color || '#10b981'}` }}>
+                        <div className="welcome-info">
+                          <h1>Olá! 👋</h1>
+                          <p>Seu celular está pareado com o <strong>{AVAILABLE_CARTS.find(c => c.id === pairedCartId)?.name}</strong>.</p>
+                          <div className="sync-badge" style={{ borderColor: AVAILABLE_CARTS.find(c => c.id === pairedCartId)?.color + '40', color: AVAILABLE_CARTS.find(c => c.id === pairedCartId)?.color, backgroundColor: AVAILABLE_CARTS.find(c => c.id === pairedCartId)?.color + '15' }}>
+                            <span className="sync-indicator pulse-dot" style={{ backgroundColor: AVAILABLE_CARTS.find(c => c.id === pairedCartId)?.color }}></span>
+                            Sincronizado e Pronto para Scanner
+                          </div>
+                        </div>
+                        <button 
+                          className="btn-disconnect-cart"
+                          onClick={handleDisconnect}
+                        >
+                          Desconectar Carrinho
+                        </button>
+                      </div>
+
+                      <div className="app-instruction-grid">
+                        <div className="instruction-card glass-panel">
+                          <span className="inst-icon">📟</span>
+                          <h3>Coloque itens no Carrinho</h3>
+                          <p>Aponte os produtos para a câmera do monitor do totem. Eles serão identificados por IA.</p>
+                        </div>
+                        <div className="instruction-card glass-panel">
+                          <span className="inst-icon">🛒</span>
+                          <h3>Acompanhe no Celular</h3>
+                          <p>Os itens aparecem e somam em tempo real na aba <strong>Carrinho</strong> do seu celular.</p>
+                        </div>
+                      </div>
+
+                      <div className="app-promo-box glass-panel">
+                        <h3>Descontos Exclusivos 🏷️</h3>
+                        <div className="promo-list">
+                          <div className="promo-item">
+                            <span>🥤 Coca-Cola Lata</span>
+                            <strong>Leve 3 por R$14,00</strong>
+                          </div>
+                          <div className="promo-item">
+                            <span>☕ Café Melitta</span>
+                            <strong>10% OFF direto</strong>
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {appTab === 'cart' && (
+                <div className="app-cart-tab slide-in">
+                  {!isPaired ? (
+                    <div className="glass-panel empty-cart-view">
+                      <span className="empty-cart-icon">🔒</span>
+                      <h3>Carrinho Bloqueado</h3>
+                      <p>Por favor, pareie seu aplicativo com um carrinho inteligente na aba <strong>Início</strong> antes de ver seus itens.</p>
+                      <button className="btn-pill-blue" style={{marginTop: '1.5rem', width: 'auto', padding: '0.6rem 1.5rem'}} onClick={() => setAppTab('home')}>
+                        Ir para o Pareamento
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="cart-grid">
+                      <div className="cart-items-section glass-panel">
+                        <h2>Itens no Carrinho</h2>
+                        
+                        <div className="cart-items-list">
+                          {cart.length === 0 ? (
+                            <div className="empty-cart-view">
+                              <span className="empty-cart-icon">🛒</span>
+                              <h3>Nenhum produto escaneado</h3>
+                              <p>Coloque algum produto em frente à câmera do totem do carrinho para registrá-lo.</p>
+                            </div>
+                          ) : (
+                            cart.map(item => (
+                              <div key={item.className} className="cart-item-card">
+                                <div className="cart-item-emoji">{item.image}</div>
+                                <div className="cart-item-details">
+                                  <div className="cart-item-title">{item.name}</div>
+                                  <div className="cart-item-subtitle">R$ {item.price.toFixed(2).replace('.', ',')} / {item.weight || "un"}</div>
+                                </div>
+                                <div className="cart-item-actions">
+                                  <button className="qty-btn" onClick={() => updateQty(item.className, -1)}>-</button>
+                                  <span className="qty-val">{item.qty}</span>
+                                  <button className="qty-btn" onClick={() => updateQty(item.className, 1)}>+</button>
+                                </div>
+                                <div className="cart-item-total">
+                                  R$ {(item.price * item.qty).toFixed(2).replace('.', ',')}
+                                </div>
+                                <button className="delete-item-btn" onClick={() => removeFromCart(item.className)} title="Remover item">
+                                  🗑️
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+
+                      {cart.length > 0 && (
+                        <div className="cart-summary-section glass-panel">
+                          <h3>Resumo do Pedido</h3>
+                          <div className="summary-details">
+                            <div className="summary-row">
+                              <span>Subtotal</span>
+                              <span>R$ {subtotal.toFixed(2).replace('.', ',')}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span>Imposto (6%)</span>
+                              <span>R$ {tax.toFixed(2).replace('.', ',')}</span>
+                            </div>
+                            <div className="summary-row grand-total">
+                              <span>Total</span>
+                              <span>R$ {total.toFixed(2).replace('.', ',')}</span>
+                            </div>
+                          </div>
+
+                          <button 
+                            className="btn-action-primary btn-checkout-teal"
+                            onClick={() => setAppTab('checkout')}
+                          >
+                            Pagar R$ {total.toFixed(2).replace('.', ',')} ›
+                          </button>
+                          <button className="btn-cart-clear-large" onClick={clearCart}>
+                            Esvaziar Carrinho
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {appTab === 'checkout' && (
+                <div className="app-checkout-tab slide-in">
+                  {!isPaired ? (
+                    <div className="glass-panel empty-cart-view">
+                      <span className="empty-cart-icon">🔒</span>
+                      <h3>Pagamento Bloqueado</h3>
+                      <p>Por favor, pareie seu aplicativo com um carrinho inteligente na aba <strong>Início</strong> para realizar o pagamento.</p>
+                      <button className="btn-pill-blue" style={{marginTop: '1.5rem', width: 'auto', padding: '0.6rem 1.5rem'}} onClick={() => setAppTab('home')}>
+                        Ir para o Pareamento
+                      </button>
+                    </div>
+                  ) : cart.length === 0 ? (
+                    <div className="glass-panel empty-checkout-box" style={{padding: '3rem', textAlign: 'center'}}>
+                      <span style={{fontSize: '3rem', display: 'block', marginBottom: '1rem'}}>💳</span>
+                      <h3>Seu carrinho está vazio</h3>
+                      <p>Adicione produtos antes de ir para o pagamento.</p>
+                    </div>
+                  ) : (
+                    <div className="checkout-grid">
+                      <div className="checkout-payment-section glass-panel">
+                        <h2>Forma de Pagamento</h2>
+                        
+                        <div className="payment-methods-grid">
+                          <div 
+                            className={`payment-method-card ${paymentMethod === 'credit_card' ? 'active' : ''}`}
+                            onClick={() => setPaymentMethod('credit_card')}
+                          >
+                            <span className="payment-method-icon">💳</span>
+                            <span>Cartão de Crédito</span>
+                          </div>
+                          <div 
+                            className={`payment-method-card ${paymentMethod === 'pix' ? 'active' : ''}`}
+                            onClick={() => setPaymentMethod('pix')}
+                          >
+                            <span className="payment-method-icon">📱</span>
+                            <span>Pix Copia/Cola</span>
+                          </div>
+                          <div 
+                            className={`payment-method-card ${paymentMethod === 'wallet' ? 'active' : ''}`}
+                            onClick={() => setPaymentMethod('wallet')}
+                          >
+                            <span className="payment-method-icon">🌐</span>
+                            <span>Apple / Google Pay</span>
+                          </div>
+                        </div>
+
+                        {paymentMethod === 'credit_card' && (
+                          <form onSubmit={handleCheckoutSubmit} className="checkout-form">
+                            <div className="form-group">
+                              <label htmlFor="cardName">Titular do Cartão</label>
+                              <input 
+                                id="cardName"
+                                type="text" 
+                                className="form-input" 
+                                value={cardName}
+                                onChange={(e) => setCardName(e.target.value)}
+                                required
+                              />
+                            </div>
+
+                            <div className="form-group">
+                              <label htmlFor="cardNumber">Número do Cartão</label>
+                              <input 
+                                id="cardNumber"
+                                type="text" 
+                                className="form-input" 
+                                value={cardNumber}
+                                onChange={(e) => setCardNumber(e.target.value)}
+                                required
+                              />
+                            </div>
+
+                            <div className="form-row">
+                              <div className="form-group">
+                                <label htmlFor="cardExpiry">Validade</label>
+                                <input 
+                                  id="cardExpiry"
+                                  type="text" 
+                                  className="form-input" 
+                                  value={cardExpiry}
+                                  onChange={(e) => setCardExpiry(e.target.value)}
+                                  placeholder="MM/AA"
+                                  required
+                                />
+                              </div>
+                              <div className="form-group">
+                                <label htmlFor="cardCvv">CVV</label>
+                                <input 
+                                  id="cardCvv"
+                                  type="password" 
+                                  className="form-input" 
+                                  value={cardCvv}
+                                  onChange={(e) => setCardCvv(e.target.value)}
+                                  maxLength="3"
+                                  required
+                                />
+                              </div>
+                            </div>
+
+                            <div className="form-toggle-row">
+                              <span>Salvar dados para futuras compras</span>
+                              <label className="toggle-switch">
+                                <input 
+                                  type="checkbox" 
+                                  checked={saveCardDetails}
+                                  onChange={(e) => setSaveCardDetails(e.target.checked)}
+                                />
+                                <span className="toggle-slider"></span>
+                              </label>
+                            </div>
+
+                            <button 
+                              type="submit" 
+                              className="btn-action-primary btn-secure-pay"
+                            >
+                              🔒 Confirmar Pagamento (R$ {total.toFixed(2).replace('.', ',')})
+                            </button>
+                          </form>
+                        )}
+
+                        {paymentMethod === 'pix' && (
+                          <div className="pix-checkout-view">
+                            <div style={{fontSize: '3rem'}}>📱</div>
+                            <h3>Código Pix Gerado</h3>
+                            <p>Copie o código abaixo e pague no app do seu banco:</p>
+                            <div className="pix-code-box">
+                              00020101021226850014br.gov.bcb.pix2563pix-qr.mercadopago.com/emv/v2/53594821a8-77ea-4878-a5b0-01b57821b70f5204000053039865406{total.toFixed(2)}5802BR5909VisionCart6009SaoPaulo62070503***6304D1B2
+                            </div>
+                            <button 
+                              className="btn-action-primary btn-secure-pay"
+                              onClick={() => {
+                                showToast("📋 Código Pix copiado! Processando confirmação...");
+                                setTimeout(() => {
+                                  showToast("✅ Pagamento confirmado via Pix!");
+                                  clearCart();
+                                  
+                                  // Desconecta o totem do carrinho
+                                  if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                                    wsRef.current.send(JSON.stringify({ type: 'disconnect_request' }));
+                                  }
+                                  
+                                  window.history.pushState({}, '', '/app');
+                                  setCurrentRoute('/app');
+                                  setPairedCartId(null);
+                                  setIsPaired(false);
+                                  setAppTab('home');
+                                }, 1500);
+                              }}
+                            >
+                              Copiar Pix e Confirmar
+                            </button>
+                          </div>
+                        )}
+
+                        {paymentMethod === 'wallet' && (
+                          <div className="wallet-checkout-view">
+                            <div style={{fontSize: '3.5rem'}}>🌐</div>
+                            <h3>Pague com sua Carteira Digital</h3>
+                            <p>Rápido e seguro usando Apple Pay ou Google Pay.</p>
+                            <button 
+                              className="btn-action-primary btn-secure-pay"
+                              style={{background: 'white', color: 'black', marginTop: '1.5rem'}}
+                              onClick={() => {
+                                showToast("🔒 Autenticando com sua carteira digital...");
+                                setTimeout(() => {
+                                  showToast("✅ Pagamento confirmado com sucesso!");
+                                  clearCart();
+                                  
+                                  // Desconecta o totem do carrinho
+                                  if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                                    wsRef.current.send(JSON.stringify({ type: 'disconnect_request' }));
+                                  }
+
+                                  window.history.pushState({}, '', '/app');
+                                  setCurrentRoute('/app');
+                                  setPairedCartId(null);
+                                  setIsPaired(false);
+                                  setAppTab('home');
+                                }, 1500);
+                              }}
+                            >
+                              Pagar com Carteira Digital
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="checkout-summary-section glass-panel">
+                        <h3>Resumo do Pedido</h3>
+                        
+                        <div className="checkout-amount-box">
+                          <div className="checkout-amount-title">Total a Pagar</div>
+                          <div className="checkout-amount-val">R$ {total.toFixed(2).replace('.', ',')}</div>
+                          <div className="checkout-amount-sub">
+                            {totalItemsCount} produtos no carrinho
+                          </div>
+                        </div>
+
+                        <div className="checkout-summary-items-list">
+                          {cart.map(item => (
+                            <div key={item.className} className="checkout-summary-item">
+                              <span>{item.image} {item.name} (x{item.qty})</span>
+                              <span>R$ {(item.price * item.qty).toFixed(2).replace('.', ',')}</span>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="security-notice">
+                          <span className="security-icon">🔒</span>
+                          <p>Suas informações de pagamento são encriptadas de ponta a ponta.</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {appTab === 'profile' && (
+                <div className="app-profile-tab slide-in">
+                  <div className="profile-grid">
+                    <div className="profile-card glass-panel">
+                      <div className="profile-avatar">👤</div>
+                      <h2 className="profile-name">Arthur S Portaluppi</h2>
+                      <div className="profile-email">arthur.portaluppi@exemplo.com</div>
+                    </div>
+
+                    <div className="profile-details-section">
+                      <div className="glass-panel profile-settings-box">
+                        <h3>Configurações do App</h3>
+                        <div className="profile-settings-item">
+                          <span>Histórico de Compras</span>
+                          <span>›</span>
+                        </div>
+                        <div className="profile-settings-item">
+                          <span>Métodos de Pagamento Salvos</span>
+                          <span>›</span>
+                        </div>
+                        <div className="profile-settings-item">
+                          <span>Preferências de Notificação</span>
+                          <span>›</span>
+                        </div>
+                      </div>
+
+                      <div className="glass-panel profile-about-box">
+                        <h3>Sobre o VisionCart</h3>
+                        <p>Este sistema simula o checkout autônomo. O dispositivo acoplado ao carrinho escaneia produtos com IA e envia as informações automaticamente para o celular do cliente.</p>
+                        <p className="tech-stack-desc">Desenvolvido com React + Vite + TensorFlow.js.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-
-          {/* Header */}
-          <header className="phone-header">
-            {activeTab !== 'scan' ? (
-              <span className="phone-header-icon" onClick={() => setActiveTab('scan')}>‹</span>
-            ) : (
-              <span className="phone-header-icon">⚙️</span>
-            )}
-            <h1 className="phone-header-title">
-              <span>🛒</span> VisionCart
-            </h1>
-            <span className="phone-header-icon" onClick={() => setActiveTab('cart')}>
-              🛒{cart.length > 0 && <span style={{fontSize: '0.7rem', verticalAlign: 'super', background: 'var(--danger)', color: 'white', padding: '1px 5px', borderRadius: '50%'}}>{totalItemsCount}</span>}
-            </span>
+        </div>
+      ) : (
+        /* RENDER MODO 2: TOTEM DO CARRINHO (KIOSK/MONITOR SCREEN) */
+        <div className="device-view-container slide-in">
+          {/* Header do Totem */}
+          <header className="app-header glass-panel" style={{ width: '100%', maxWidth: '860px', marginBottom: '1.5rem', borderRadius: '20px' }}>
+            <div className="header-logo">
+              <span className="logo-emoji">🛒</span>
+              <span className="logo-text">VisionCart Monitor</span>
+            </div>
+            <div className="header-status">
+              <span className="monitor-status">
+                <span className={`pulse-dot ${isPaired ? 'green' : 'red'}`} style={{ backgroundColor: isPaired ? 'var(--success)' : 'var(--danger)' }}></span>
+                {isPaired ? 'CONECTADO AO APP' : 'AGUARDANDO SINCRONIZAÇÃO'}
+              </span>
+            </div>
           </header>
 
-          {/* Main Content Area */}
-          <main className="phone-content">
+          <div className="device-monitor glass-panel" style={{ borderTop: `4px solid ${AVAILABLE_CARTS.find(c => c.id === deviceCartId)?.color}` }}>
             
-            {/* 1. SCAN TAB */}
-            {activeTab === 'scan' && (
-              <div className="scan-tab">
-                <div className="scan-title-section">
-                  <h3>
-                    <span className="pulse-dot"></span>
-                    {isCameraActive ? "Câmera de Reconhecimento Ativa" : "Reconhecimento de Produtos"}
-                  </h3>
+            {/* ESTADO 2A: NÃO CONECTADO (MOSTRA O QR CODE DE PAREAMENTO) */}
+            {!isPaired ? (
+              <div className="device-monitor-disconnected-layout">
+                {/* Seletor de Simulador de Carrinho Físico */}
+                <div className="physical-cart-selector" style={{ marginBottom: '1rem' }}>
+                  <span className="selector-title">Selecionar Carrinho Físico:</span>
+                  <div className="selector-options">
+                    {AVAILABLE_CARTS.map(c => (
+                      <button
+                        key={c.id}
+                        className={`selector-option-btn ${deviceCartId === c.id ? 'active' : ''}`}
+                        onClick={() => setDeviceCartId(c.id)}
+                        style={{ borderBottom: deviceCartId === c.id ? `3px solid ${c.color}` : '3px solid transparent' }}
+                      >
+                        <span className="dot" style={{ backgroundColor: c.color }}></span>
+                        {c.name}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                <div className="camera-viewport">
+                <div className="device-monitor-header" style={{ border: 'none', textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '0.5rem', alignItems: 'center' }}>
+                  <h2>Conecte seu celular para começar</h2>
+                  <p style={{ color: 'var(--text-secondary)', maxWidth: '500px', fontSize: '0.95rem' }}>
+                    Escaneie o código QR abaixo com a câmera do seu smartphone. Isso abrirá o aplicativo de checkout e conectará seu carrinho.
+                  </p>
+                </div>
+
+                <div className="device-pairing-qrcode-section" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: '1rem' }}>
+                  <div className="qrcode-mock-wrapper large" style={{ background: 'white', padding: '16px', borderRadius: '24px', boxShadow: '0 10px 30px rgba(0,0,0,0.3)' }}>
+                    <img 
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${window.location.protocol}//${window.location.host}/app?cartId=${deviceCartId}`} 
+                      alt={`QR Code para conectar ao ${deviceCartId}`}
+                      style={{ width: '220px', height: '220px', display: 'block' }}
+                    />
+                  </div>
+                  <div className="pairing-cart-code" style={{ backgroundColor: AVAILABLE_CARTS.find(c => c.id === deviceCartId)?.color + '20', color: AVAILABLE_CARTS.find(c => c.id === deviceCartId)?.color, marginTop: '1.25rem', padding: '6px 16px', borderRadius: '20px', fontWeight: 'bold' }}>
+                    {AVAILABLE_CARTS.find(c => c.id === deviceCartId)?.name}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* ESTADO 2B: CONECTADO (MOSTRA A CÂMERA DE RASTREAMENTO IA E PRODUTOS DETECTADOS) */
+              <div className="device-monitor-connected-layout">
+                <div className="device-monitor-header">
+                  <div className="monitor-status">
+                    <span className="pulse-dot" style={{ backgroundColor: isCameraActive ? (isModelLoaded ? 'var(--success)' : '#f59e0b') : 'var(--danger)' }}></span>
+                    {isCameraActive ? (isModelLoaded ? "CÂMERA ATIVA & MODELO IA CARREGADO" : "🤖 CARREGANDO MODELO IA...") : "INICIANDO CÂMERA..."}
+                  </div>
+                  <div className="monitor-cart-id" style={{ backgroundColor: AVAILABLE_CARTS.find(c => c.id === deviceCartId)?.color + '20', color: AVAILABLE_CARTS.find(c => c.id === deviceCartId)?.color }}>
+                    {AVAILABLE_CARTS.find(c => c.id === deviceCartId)?.name.toUpperCase()}
+                  </div>
+                </div>
+
+                <div className="device-camera-viewport" style={{ marginTop: '1rem' }}>
                   <video 
                     ref={videoRef} 
                     autoPlay 
                     playsInline 
                     muted 
-                    className={`camera-feed ${isCameraActive ? "active" : ""}`}
+                    className={`device-camera-feed ${isCameraActive ? "active" : ""}`}
                   />
                   
-                  {isCameraActive && <div className="scanner-overlay"></div>}
+                  {isCameraActive && <div className="device-scanner-overlay"></div>}
                   
                   {!isCameraActive && (
                     <div className="camera-placeholder">
                       <span className="camera-placeholder-icon">📸</span>
-                      <p style={{fontSize: '0.85rem'}}>Aponte os produtos cadastrados para a câmera para adicioná-los automaticamente.</p>
-                      <button className="btn-pill-blue" style={{width: 'auto', padding: '0.5rem 1.25rem'}} onClick={startCamera}>
-                        Ativar Câmera
+                      <h3>Iniciando Câmera do Totem...</h3>
+                      <p>Por favor, conceda permissão de webcam para o scanner funcionar.</p>
+                      <button className="btn-pill-blue" style={{width: 'auto', padding: '0.65rem 1.5rem', marginTop: '1rem'}} onClick={handleRetryCamera}>
+                        Tentar Novamente
                       </button>
                     </div>
                   )}
 
-                  {/* Realtime detection badge */}
                   {isCameraActive && prediction && prediction.probability > 0.5 && db.some(item => item.className.toLowerCase() === prediction.className.toLowerCase().trim()) && (
-                    <div className="prediction-overlay" style={{bottom: '10px', fontSize: '0.75rem', padding: '4px 10px'}}>
-                      Buscando: {prediction.className} ({(prediction.probability * 100).toFixed(0)}%)
+                    <div className="device-prediction-overlay">
+                      Identificado: {prediction.className} ({(prediction.probability * 100).toFixed(0)}%)
                     </div>
                   )}
                 </div>
 
-                {cooldownRef.current && !lastScannedItem && (
-                  <div className="cooldown-badge">⏳ Aguarde o próximo produto...</div>
-                )}
-
-                {/* Bottom sheet detailing the scanned product */}
-                {lastScannedItem && (
-                  <div className="product-detected-card">
-                    <div className="detected-item-header">
-                      <span className="detected-item-emoji">{lastScannedItem.image}</span>
-                      <div className="detected-item-info">
-                        <div className="detected-item-name">{lastScannedItem.name}</div>
-                        <div className="detected-item-meta">
-                          <span>{lastScannedItem.weight}</span>
-                          <span>•</span>
-                          <span className="detected-item-price">R$ {lastScannedItem.price.toFixed(2).replace('.', ',')}</span>
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <div className="detected-action-row">
-                      <button className="btn-pill-gray" onClick={() => setLastScannedItem(null)}>Fechar</button>
-                      <button className="btn-pill-blue" style={{background: 'var(--success)'}}>
-                        ✓ Adicionado! (x{cart.find(i => i.className === lastScannedItem.className)?.qty || 1})
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* 2. CART TAB */}
-            {activeTab === 'cart' && (
-              <div style={{display: 'flex', flexDirection: 'column', height: '100%', gap: '1rem'}}>
-                <div className="cart-header-row">
-                  <h3>Meu Carrinho ({totalItemsCount} itens)</h3>
-                  <button className="btn-add-items" onClick={() => setActiveTab('scan')}>+ Escanear</button>
-                </div>
-
-                <div className="cart-items-list">
-                  {cart.length === 0 ? (
-                    <div style={{textAlign: 'center', color: 'var(--text-secondary)', padding: '3rem 1rem', fontSize: '0.85rem', lineHeight: '1.6'}}>
-                      <span style={{fontSize: '2.5rem', display: 'block', marginBottom: '0.5rem'}}>🛒</span>
-                      Seu carrinho está vazio.<br/>Aponte um produto para a câmera ou utilize o simulador lateral.
+                <div className="device-monitor-footer" style={{ marginTop: '1rem' }}>
+                  {lastScannedItems.length === 0 ? (
+                    <div className="device-instruction-text">
+                      Posicione a embalagem do produto em frente a esta câmera para registrá-lo. Ele aparecerá no seu celular automaticamente.
                     </div>
                   ) : (
-                    cart.map(item => (
-                      <div key={item.className} className="cart-item-card">
-                        <div className="cart-item-emoji">{item.image}</div>
-                        <div className="cart-item-details">
-                          <div className="cart-item-title">{item.name}</div>
-                          <div className="cart-item-subtitle">R$ {item.price.toFixed(2).replace('.', ',')} / {item.weight || "un"}</div>
+                    <div className="device-products-scanned-container" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', width: '100%' }}>
+                      {lastScannedItems.map(item => (
+                        <div key={item.className} className="device-product-detected-card">
+                          <div className="detected-item-details">
+                            <span className="detected-item-emoji">{item.image}</span>
+                            <div className="detected-item-text">
+                              <div className="detected-name">{item.name}</div>
+                              <div className="detected-price">R$ {item.price.toFixed(2).replace('.', ',')}</div>
+                            </div>
+                          </div>
+                          <div className="detected-status-success">
+                            ✓ Enviado ao Celular!
+                          </div>
                         </div>
-                        <div className="cart-item-actions">
-                          <button className="qty-btn" onClick={() => updateQty(item.className, -1)}>-</button>
-                          <span className="qty-val">{item.qty}</span>
-                          <button className="qty-btn" onClick={() => updateQty(item.className, 1)}>+</button>
-                        </div>
-                        <div className="cart-item-total">
-                          R$ {(item.price * item.qty).toFixed(2).replace('.', ',')}
-                        </div>
-                      </div>
-                    ))
+                      ))}
+                    </div>
                   )}
                 </div>
 
-                {cart.length > 0 && (
-                  <div className="cart-summary-section">
-                    <div className="summary-row">
-                      <span>Subtotal</span>
-                      <span>R$ {subtotal.toFixed(2).replace('.', ',')}</span>
-                    </div>
-                    <div className="summary-row">
-                      <span>Imposto (6%)</span>
-                      <span>R$ {tax.toFixed(2).replace('.', ',')}</span>
-                    </div>
-                    <div className="summary-row grand-total">
-                      <span>Total Geral</span>
-                      <span>R$ {total.toFixed(2).replace('.', ',')}</span>
-                    </div>
-
-                    <button 
-                      className="btn-action-primary btn-checkout-teal"
-                      onClick={() => setActiveTab('checkout')}
-                    >
-                      Ir para o Pagamento (R$ {total.toFixed(2).replace('.', ',')}) ›
-                    </button>
-                    <button className="btn-cart-clear" onClick={clearCart}>Esvaziar Carrinho</button>
-                  </div>
-                )}
+                {/* Botão de Bypass para depuração no totem */}
+                <button 
+                  className="btn-disconnect-cart" 
+                  onClick={handleDisconnect}
+                  style={{ width: '100%', marginTop: '1.5rem', opacity: '0.6' }}
+                >
+                  Desconectar Celular (Simulação)
+                </button>
               </div>
             )}
-
-            {/* 3. CHECKOUT TAB */}
-            {activeTab === 'checkout' && (
-              <div style={{display: 'flex', flexDirection: 'column', gap: '1rem'}}>
-                <div className="checkout-amount-box">
-                  <div className="checkout-amount-title">Total a Pagar</div>
-                  <div className="checkout-amount-val">R$ {total.toFixed(2).replace('.', ',')}</div>
-                  <div className="checkout-amount-sub">
-                    {totalItemsCount} produtos no carrinho (inclui imposto de R$ {tax.toFixed(2).replace('.', ',')})
-                  </div>
-                </div>
-
-                <div className="checkout-section-title">Método de Pagamento</div>
-                <div className="payment-methods-grid">
-                  <div 
-                    className={`payment-method-card ${paymentMethod === 'credit_card' ? 'active' : ''}`}
-                    onClick={() => setPaymentMethod('credit_card')}
-                  >
-                    <span className="payment-method-icon">💳</span>
-                    <span>Cartão</span>
-                  </div>
-                  <div 
-                    className={`payment-method-card ${paymentMethod === 'pix' ? 'active' : ''}`}
-                    onClick={() => setPaymentMethod('pix')}
-                  >
-                    <span className="payment-method-icon">📱</span>
-                    <span>Pix Copia/Cola</span>
-                  </div>
-                  <div 
-                    className={`payment-method-card ${paymentMethod === 'wallet' ? 'active' : ''}`}
-                    onClick={() => setPaymentMethod('wallet')}
-                  >
-                    <span className="payment-method-icon">🌐</span>
-                    <span>Apple Pay</span>
-                  </div>
-                </div>
-
-                {paymentMethod === 'credit_card' && (
-                  <form onSubmit={handleCheckoutSubmit} className="checkout-form">
-                    <div className="checkout-section-title">Dados do Cartão</div>
-                    
-                    <div className="form-group">
-                      <label htmlFor="cardName">Titular do Cartão</label>
-                      <input 
-                        id="cardName"
-                        type="text" 
-                        className="form-input" 
-                        value={cardName}
-                        onChange={(e) => setCardName(e.target.value)}
-                        required
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label htmlFor="cardNumber">Número do Cartão</label>
-                      <input 
-                        id="cardNumber"
-                        type="text" 
-                        className="form-input" 
-                        value={cardNumber}
-                        onChange={(e) => setCardNumber(e.target.value)}
-                        required
-                      />
-                    </div>
-
-                    <div className="form-row">
-                      <div className="form-group">
-                        <label htmlFor="cardExpiry">Validade</label>
-                        <input 
-                          id="cardExpiry"
-                          type="text" 
-                          className="form-input" 
-                          value={cardExpiry}
-                          onChange={(e) => setCardExpiry(e.target.value)}
-                          placeholder="MM/AA"
-                          required
-                        />
-                      </div>
-                      <div className="form-group">
-                        <label htmlFor="cardCvv">CVV</label>
-                        <input 
-                          id="cardCvv"
-                          type="password" 
-                          className="form-input" 
-                          value={cardCvv}
-                          onChange={(e) => setCardCvv(e.target.value)}
-                          maxLength="3"
-                          required
-                        />
-                      </div>
-                    </div>
-
-                    <div className="form-toggle-row">
-                      <span>Salvar dados para futuras compras</span>
-                      <label className="toggle-switch">
-                        <input 
-                          type="checkbox" 
-                          checked={saveCardDetails}
-                          onChange={(e) => setSaveCardDetails(e.target.checked)}
-                        />
-                        <span className="toggle-slider"></span>
-                      </label>
-                    </div>
-
-                    <button 
-                      type="submit" 
-                      className="btn-action-primary btn-secure-pay"
-                      disabled={cart.length === 0}
-                    >
-                      🔒 Pagar R$ {total.toFixed(2).replace('.', ',')}
-                    </button>
-                  </form>
-                )}
-
-                {paymentMethod === 'pix' && (
-                  <div style={{display: 'flex', flexDirection: 'column', gap: '1rem', textAlign: 'center', padding: '1rem'}}>
-                    <div style={{fontSize: '3rem'}}>📱</div>
-                    <div style={{fontSize: '0.85rem', fontWeight: 600}}>Pix Copia e Cola Gerado</div>
-                    <div style={{
-                      background: 'rgba(255,255,255,0.03)', 
-                      border: '1px solid var(--glass-border)', 
-                      padding: '0.75rem', 
-                      borderRadius: '10px',
-                      fontSize: '0.7rem',
-                      fontFamily: 'monospace',
-                      wordBreak: 'break-all',
-                      color: 'var(--text-secondary)'
-                    }}>
-                      00020101021226850014br.gov.bcb.pix2563pix-qr.mercadopago.com/emv/v2/53594821a8-77ea-4878-a5b0-01b57821b70f5204000053039865406{total.toFixed(2)}5802BR5909VisionCart6009SaoPaulo62070503***6304D1B2
-                    </div>
-                    <button 
-                      className="btn-action-primary btn-secure-pay"
-                      onClick={() => {
-                        alert("Código Pix copiado! Simulando confirmação de pagamento...");
-                        alert("Pagamento confirmado via Pix!");
-                        clearCart();
-                        setActiveTab('scan');
-                      }}
-                    >
-                      Copiar Pix e Confirmar
-                    </button>
-                  </div>
-                )}
-
-                {paymentMethod === 'wallet' && (
-                  <div style={{display: 'flex', flexDirection: 'column', gap: '1rem', textAlign: 'center', padding: '1.5rem'}}>
-                    <div style={{fontSize: '3rem'}}>🌐</div>
-                    <div style={{fontSize: '0.85rem', fontWeight: 600}}>Pagar com Apple Pay ou Google Pay</div>
-                    <button 
-                      className="btn-action-primary btn-secure-pay"
-                      style={{background: 'white', color: 'black'}}
-                      onClick={() => {
-                        alert("Simulando Apple Pay / Google Pay Auth...");
-                        alert("Pagamento confirmado com sucesso!");
-                        clearCart();
-                        setActiveTab('scan');
-                      }}
-                    >
-                      Pagar com Carteira Digital
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* 4. DEALS TAB */}
-            {activeTab === 'deals' && (
-              <div style={{display: 'flex', flexDirection: 'column', gap: '1rem'}}>
-                <div className="deals-banner">
-                  <h4>Ofertas da Semana! 🏷️</h4>
-                  <p>Aproveite os descontos especiais para os produtos no seu carrinho.</p>
-                </div>
-
-                <div className="deal-card">
-                  <span className="deal-emoji">🥤</span>
-                  <div className="deal-info">
-                    <div className="deal-title">Leve 3 Coca-Colas por R$ 14,00</div>
-                    <div className="deal-desc">Economize R$ 2,50 na compra combinada.</div>
-                  </div>
-                  <span className="deal-badge">-15%</span>
-                </div>
-
-                <div className="deal-card">
-                  <span className="deal-emoji">☕</span>
-                  <div className="deal-info">
-                    <div className="deal-title">Café Melitta em Oferta</div>
-                    <div className="deal-desc">Leve o Café Melitta tradicional com 10% de desconto direto.</div>
-                  </div>
-                  <span className="deal-badge">-10%</span>
-                </div>
-
-                <div className="deal-card">
-                  <span className="deal-emoji">🥑</span>
-                  <div className="deal-info">
-                    <div className="deal-title">Abacate Orgânico Promocional</div>
-                    <div className="deal-desc">Adicione saúde ao seu carrinho por apenas R$ 5,90.</div>
-                  </div>
-                  <span className="deal-badge">R$ 5,90</span>
-                </div>
-
-                <div className="deal-card">
-                  <span className="deal-emoji">🍓</span>
-                  <div className="deal-info">
-                    <div className="deal-title">Morangos Doces e Frescos</div>
-                    <div className="deal-desc">Compre 2 bandejas de morango e ganhe 20% de desconto no segundo.</div>
-                  </div>
-                  <span className="deal-badge">-20%</span>
-                </div>
-              </div>
-            )}
-
-            {/* 5. PROFILE TAB */}
-            {activeTab === 'profile' && (
-              <div style={{display: 'flex', flexDirection: 'column', gap: '1rem'}}>
-                <div className="profile-card">
-                  <div className="profile-avatar">👤</div>
-                  <div className="profile-name">Arthur S Portaluppi</div>
-                  <div className="profile-email">arthur.portaluppi@exemplo.com</div>
-                </div>
-
-                <div className="glass-panel" style={{padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', fontSize: '0.85rem'}}>
-                  <div style={{fontWeight: 700, borderBottom: '1px solid var(--glass-border)', paddingBottom: '6px'}}>Minha Conta</div>
-                  <div style={{display: 'flex', justifyContent: 'space-between'}}>
-                    <span>Histórico de Compras</span>
-                    <span>›</span>
-                  </div>
-                  <div style={{display: 'flex', justifyContent: 'space-between'}}>
-                    <span>Métodos de Pagamento Salvos</span>
-                    <span>›</span>
-                  </div>
-                  <div style={{display: 'flex', justifyContent: 'space-between'}}>
-                    <span>Configurações do App</span>
-                    <span>›</span>
-                  </div>
-                </div>
-
-                <div className="glass-panel" style={{padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: '1.4'}}>
-                  <div style={{fontWeight: 700, color: 'var(--text-primary)'}}>Sobre o VisionCart MVP</div>
-                  <p>Este protótipo demonstra o reconhecimento de produtos por inteligência artificial em tempo real (Teachable Machine) integrado a um carrinho auto-serviço.</p>
-                  <p style={{fontSize: '0.7rem'}}>Desenvolvido com React + Vite + TensorFlow.js</p>
-                </div>
-              </div>
-            )}
-
-          </main>
-
-          {/* Bottom Navigation Navbar */}
-          <nav className="phone-navbar">
-            <button 
-              className={`nav-item ${activeTab === 'scan' ? 'active' : ''}`}
-              onClick={() => setActiveTab('scan')}
-            >
-              <span className="nav-icon">📸</span>
-              <span>Scanner</span>
-            </button>
-            <button 
-              className={`nav-item ${activeTab === 'cart' ? 'active' : ''}`}
-              onClick={() => setActiveTab('cart')}
-            >
-              <span className="nav-icon">
-                🛒
-                {cart.length > 0 && <span style={{fontSize: '0.6rem', verticalAlign: 'super', background: 'var(--danger)', color: 'white', padding: '1px 4px', borderRadius: '50%'}}>{totalItemsCount}</span>}
-              </span>
-              <span>Carrinho</span>
-            </button>
-            <button 
-              className={`nav-item ${activeTab === 'deals' ? 'active' : ''}`}
-              onClick={() => setActiveTab('deals')}
-            >
-              <span className="nav-icon">🏷️</span>
-              <span>Ofertas</span>
-            </button>
-            <button 
-              className={`nav-item ${activeTab === 'profile' ? 'active' : ''}`}
-              onClick={() => setActiveTab('profile')}
-            >
-              <span className="nav-icon">👤</span>
-              <span>Perfil</span>
-            </button>
-          </nav>
-
-          {/* Home Indicator */}
-          <div className="phone-home-indicator"></div>
-
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
