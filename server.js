@@ -129,7 +129,7 @@ wss.on('connection', (ws) => {
 });
 
 // Fallback para qualquer outra rota (SPA Routing)
-app.get('*', (req, res) => {
+app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
