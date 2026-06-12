@@ -10,14 +10,22 @@ function viteWebSocketPlugin() {
     configureServer(server) {
       const wss = new WebSocketServer({ noServer: true });
 
-      server.httpServer.on('upgrade', (request, socket, head) => {
-        const url = new URL(request.url, `http://${request.headers.host}`);
-        if (url.pathname === '/ws') {
-          wss.handleUpgrade(request, socket, head, (ws) => {
-            wss.emit('connection', ws, request);
-          });
-        }
-      });
+      if (server.httpServer) {
+        const originalEmit = server.httpServer.emit;
+        server.httpServer.emit = function (event, ...args) {
+          if (event === 'upgrade') {
+            const [request, socket, head] = args;
+            const url = new URL(request.url, 'http://localhost');
+            if (url.pathname === '/ws') {
+              wss.handleUpgrade(request, socket, head, (ws) => {
+                wss.emit('connection', ws, request);
+              });
+              return true;
+            }
+          }
+          return originalEmit.apply(this, [event, ...args]);
+        };
+      }
 
       wss.on('connection', (ws) => {
         let clientRole = null;
