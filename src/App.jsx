@@ -569,7 +569,7 @@ Exemplo de resposta esperada: ["Nescau", "Pringles"]`;
             }
           ],
           generationConfig: {
-            responseMimeType: 'application/json'
+            response_mime_type: 'application/json'
           }
         })
       });
