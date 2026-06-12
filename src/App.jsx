@@ -203,7 +203,15 @@ function App() {
       console.error('[WebSocket] Erro na conexão:', err);
     };
 
+    // Mantém a conexão ativa no Render (evita timeout de 30s de inatividade)
+    const heartbeatInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, 20000);
+
     return () => {
+      clearInterval(heartbeatInterval);
       ws.close();
     };
   }, [currentRoute, deviceCartId]);

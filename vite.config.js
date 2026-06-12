@@ -37,6 +37,10 @@ function viteWebSocketPlugin() {
             console.log('[WS] Received:', data);
 
             switch (data.type) {
+              case 'ping': {
+                ws.send(JSON.stringify({ type: 'pong' }));
+                break;
+              }
               case 'register_cart': {
                 clientRole = 'cart';
                 clientCartId = data.cartId;
