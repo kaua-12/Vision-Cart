@@ -549,7 +549,7 @@ Retorne APENAS um array JSON de strings com os classNames dos produtos detectado
 Não adicione explicações, blocos de código markdown ou texto extra. Retorne apenas a lista de strings formatada como um array JSON válido.
 Exemplo de resposta esperada: ["Nescau", "Pringles"]`;
 
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
