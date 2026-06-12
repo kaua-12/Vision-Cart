@@ -24,6 +24,12 @@ function App() {
   const [paymentMethod, setPaymentMethod] = useState('credit_card'); // 'credit_card', 'pix', 'wallet'
   const [toastMessage, setToastMessage] = useState(null); // Mensagens de toast
   const [cameraFailed, setCameraFailed] = useState(false); // Falha de inicialização da câmera
+  const [aiEngine, setAiEngine] = useState(() => localStorage.getItem('visioncart_ai_engine') || 'teachable');
+  const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem('visioncart_gemini_api_key') || '');
+  const [isProcessingGemini, setIsProcessingGemini] = useState(false);
+  const [geminiScanMode, setGeminiScanMode] = useState(() => localStorage.getItem('visioncart_gemini_scan_mode') || 'manual');
+  const [isAiSettingsOpen, setIsAiSettingsOpen] = useState(false);
+  const [geminiStatus, setGeminiStatus] = useState('idle'); // 'idle' | 'scanning' | 'success' | 'error'
 
   const AVAILABLE_CARTS = [
     { id: 'cart-001', name: 'Carrinho #001', color: '#0ea5e9', emoji: '🔵' },
@@ -57,6 +63,29 @@ function App() {
   const debugTextRef = useRef(null);
   const pairingSessionIdRef = useRef(0);
   const isPairingActiveRef = useRef(false);
+
+  // Refs e sincs para o motor Gemini no loop do animframe
+  const aiEngineRef = useRef(aiEngine);
+  const geminiScanModeRef = useRef(geminiScanMode);
+  const geminiApiKeyRef = useRef(geminiApiKey);
+  const isProcessingGeminiRef = useRef(isProcessingGemini);
+  const geminiLastScanTimeRef = useRef(0);
+
+  useEffect(() => {
+    aiEngineRef.current = aiEngine;
+  }, [aiEngine]);
+
+  useEffect(() => {
+    geminiScanModeRef.current = geminiScanMode;
+  }, [geminiScanMode]);
+
+  useEffect(() => {
+    geminiApiKeyRef.current = geminiApiKey;
+  }, [geminiApiKey]);
+
+  useEffect(() => {
+    isProcessingGeminiRef.current = isProcessingGemini;
+  }, [isProcessingGemini]);
 
   // Monitor de popstate para roteamento nativo
   useEffect(() => {
@@ -352,7 +381,9 @@ function App() {
       setIsModelLoaded(true);
     } catch (error) {
       console.error(error);
-      showToast("❌ Erro ao carregar o modelo. Verifique o link.");
+      if (aiEngineRef.current === 'teachable') {
+        showToast("❌ Erro ao carregar o modelo Teachable Machine. Verifique o link.");
+      }
     }
   };
 
@@ -455,11 +486,141 @@ function App() {
     reader.readAsDataURL(file);
   };
 
+  const scanWithGemini = async () => {
+    const apiKey = geminiApiKeyRef.current;
+    if (!videoRef.current || isProcessingGeminiRef.current) return;
+    
+    if (!apiKey) {
+      showToast("⚠️ Configure sua Chave de API do Gemini nas configurações!");
+      setIsAiSettingsOpen(true);
+      return;
+    }
+
+    setIsProcessingGemini(true);
+    isProcessingGeminiRef.current = true;
+    setGeminiStatus('scanning');
+    geminiLastScanTimeRef.current = Date.now();
+
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoRef.current.videoWidth || 640;
+      canvas.height = videoRef.current.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error("Não foi possível criar contexto do canvas");
+
+      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      const base64Data = dataUrl.split(',')[1];
+
+      const promptText = `Você é a câmera de um carrinho de supermercado inteligente (VisionCart). Analise a imagem e identifique quais dos seguintes produtos estão presentes na imagem e estão sendo mostrados pelo cliente para compra (você pode identificar múltiplos produtos ao mesmo tempo).
+
+Produtos disponíveis (use exatamente o className indicado):
+- Nescau (className: Nescau)
+- Pringles (className: Pringles)
+- Pão de Forma (className: Pão de Forma)
+- Leite Condensado (className: Leite Condensado)
+- Cappuccino (className: Cappuccino)
+- Enxaguante Bucal (className: Enxaguante Bucal)
+- Óleo de Soja (className: Óleo de Soja)
+- Sabonete (className: Sabonete)
+- Feijão (className: Feijão)
+- Açúcar (className: Açúcar)
+
+Retorne APENAS um array JSON de strings com os classNames dos produtos detectados que estão sendo apresentados para escaneamento. Se nenhum produto estiver claramente na imagem ou se for apenas o fundo/mão/carrinho vazio, retorne um array vazio [].
+Não adicione explicações, blocos de código markdown ou texto extra. Retorne apenas a lista de strings formatada como um array JSON válido.
+Exemplo de resposta esperada: ["Nescau", "Pringles"]`;
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                { text: promptText },
+                {
+                  inlineData: {
+                    mimeType: 'image/jpeg',
+                    data: base64Data
+                  }
+                }
+              ]
+            }
+          ],
+          generationConfig: {
+            responseMimeType: 'application/json'
+          }
+        })
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Erro na API: ${response.status} - ${errText}`);
+      }
+
+      const resData = await response.json();
+      const responseText = resData.candidates?.[0]?.content?.parts?.[0]?.text;
+      
+      if (responseText) {
+        const detectedClassNames = JSON.parse(responseText.trim());
+        if (Array.isArray(detectedClassNames)) {
+          let scannedAny = false;
+          const itemsToScan = [];
+
+          detectedClassNames.forEach(className => {
+            const dbItem = db.find(item => item.className.toLowerCase() === className.trim().toLowerCase());
+            if (dbItem) {
+              itemsToScan.push(dbItem);
+              scannedAny = true;
+            }
+          });
+
+          if (scannedAny) {
+            itemsToScan.forEach(item => {
+              triggerProductScanned(item);
+            });
+            setGeminiStatus('success');
+            showToast(`✨ Gemini detectou: ${itemsToScan.map(i => i.name).join(', ')}`);
+          } else {
+            setGeminiStatus('idle');
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Erro no escaneamento Gemini:", error);
+      setGeminiStatus('error');
+      showToast(`❌ Erro no Gemini: ${error.message}`);
+    } finally {
+      setIsProcessingGemini(false);
+      isProcessingGeminiRef.current = false;
+      setTimeout(() => {
+        setGeminiStatus('idle');
+      }, 1500);
+    }
+  };
+
   const loop = async () => {
     try {
       if (!isActiveRef.current) return;
-      if (videoRef.current && modelRef.current && videoRef.current.readyState >= 2) {
-        await predict();
+      
+      const currentEngine = aiEngineRef.current;
+      if (currentEngine === 'teachable') {
+        if (videoRef.current && modelRef.current && videoRef.current.readyState >= 2) {
+          await predict();
+        }
+      } else if (currentEngine === 'gemini') {
+        const currentMode = geminiScanModeRef.current;
+        const processing = isProcessingGeminiRef.current;
+        if (currentMode === 'auto' && !processing) {
+          const now = Date.now();
+          if (now - geminiLastScanTimeRef.current >= 4000) {
+            if (videoRef.current && videoRef.current.readyState >= 2) {
+              await scanWithGemini();
+            }
+          }
+        }
       }
     } catch (error) {
       console.error("Erro no loop:", error);
@@ -468,6 +629,22 @@ function App() {
       requestRef.current = requestAnimationFrame(loop);
     }
   };
+
+  // Atalho de teclado para escaneamento manual (Espaço)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === ' ' || e.code === 'Space') {
+        // Apenas se o totem estiver visível, com Gemini no modo manual e sem modais abertos
+        const isApp = window.location.pathname.startsWith('/app') || window.location.pathname.startsWith('/mobile');
+        if (!isApp && aiEngineRef.current === 'gemini' && geminiScanModeRef.current === 'manual' && !isAiSettingsOpen && isCameraActive && !isProcessingGeminiRef.current) {
+          e.preventDefault();
+          scanWithGemini();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isAiSettingsOpen, isCameraActive]);
 
   const predict = async () => {
     if (!modelRef.current || !videoRef.current) return;
@@ -1149,15 +1326,41 @@ function App() {
         /* RENDER MODO 2: TOTEM DO CARRINHO (KIOSK/MONITOR SCREEN) */
         <div className="device-view-container slide-in">
           {/* Header do Totem */}
-          <header className="app-header glass-panel" style={{ width: '100%', maxWidth: '860px', marginBottom: '1.5rem', borderRadius: '20px' }}>
+          <header className="app-header glass-panel" style={{ width: '100%', maxWidth: '860px', marginBottom: '1.5rem', borderRadius: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem 1.5rem' }}>
             <div className="header-logo">
               <span className="logo-emoji">🛒</span>
               <span className="logo-text">VisionCart Monitor</span>
             </div>
-            <div className="header-status">
+            <div className="header-status" style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+              {/* Seletor de IA */}
+              <div className="ai-engine-selector-container">
+                <select 
+                  value={aiEngine} 
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setAiEngine(val);
+                    localStorage.setItem('visioncart_ai_engine', val);
+                    showToast(`🤖 Motor de IA alterado para: ${val === 'gemini' ? 'Gemini 1.5 Flash' : 'Teachable Machine'}`);
+                  }}
+                  className="ai-engine-select"
+                >
+                  <option value="teachable">Teachable Machine (Local)</option>
+                  <option value="gemini">Gemini 1.5 Flash (Nuvem)</option>
+                </select>
+              </div>
+
+              {/* Botão de Configurações */}
+              <button 
+                onClick={() => setIsAiSettingsOpen(true)}
+                className="btn-ai-settings"
+                title="Configurações de IA"
+              >
+                ⚙️
+              </button>
+
               <span className="monitor-status">
                 <span className={`pulse-dot ${isPaired ? 'green' : 'red'}`} style={{ backgroundColor: isPaired ? 'var(--success)' : 'var(--danger)' }}></span>
-                {isPaired ? 'CONECTADO AO APP' : 'AGUARDANDO SINCRONIZAÇÃO'}
+                {isPaired ? 'CONECTADO' : 'AGUARDANDO APP'}
               </span>
             </div>
           </header>
@@ -1210,8 +1413,18 @@ function App() {
               <div className="device-monitor-connected-layout">
                 <div className="device-monitor-header">
                   <div className="monitor-status">
-                    <span className="pulse-dot" style={{ backgroundColor: isCameraActive ? (isModelLoaded ? 'var(--success)' : '#f59e0b') : 'var(--danger)' }}></span>
-                    {isCameraActive ? (isModelLoaded ? "CÂMERA ATIVA & MODELO IA CARREGADO" : "🤖 CARREGANDO MODELO IA...") : "INICIANDO CÂMERA..."}
+                    <span className="pulse-dot" style={{ 
+                      backgroundColor: isCameraActive 
+                        ? (aiEngine === 'gemini' 
+                          ? (geminiApiKey ? 'var(--success)' : '#f59e0b') 
+                          : (isModelLoaded ? 'var(--success)' : '#f59e0b')) 
+                        : 'var(--danger)' 
+                    }}></span>
+                    {isCameraActive 
+                      ? (aiEngine === 'gemini' 
+                        ? (geminiApiKey ? "CÂMERA ATIVA & GEMINI VISION AI" : "⚠️ SEM CHAVE DE API DO GEMINI") 
+                        : (isModelLoaded ? "CÂMERA ATIVA & MODELO IA CARREGADO" : "🤖 CARREGANDO MODELO IA...")) 
+                      : "INICIANDO CÂMERA..."}
                   </div>
                   <div className="monitor-cart-id" style={{ backgroundColor: AVAILABLE_CARTS.find(c => c.id === deviceCartId)?.color + '20', color: AVAILABLE_CARTS.find(c => c.id === deviceCartId)?.color }}>
                     {AVAILABLE_CARTS.find(c => c.id === deviceCartId)?.name.toUpperCase()}
@@ -1227,7 +1440,18 @@ function App() {
                     className={`device-camera-feed ${isCameraActive ? "active" : ""}`}
                   />
                   
-                  {isCameraActive && <div className="device-scanner-overlay"></div>}
+                  {isCameraActive && aiEngine === 'gemini' && (
+                    <div className={`gemini-scanner-overlay ${geminiStatus}`}>
+                      <div className="gemini-scanner-line"></div>
+                      <div className="gemini-scanner-indicator">
+                        {geminiStatus === 'scanning' && <span className="gemini-pulse-text">🤖 Analisando com Gemini...</span>}
+                        {geminiStatus === 'success' && <span className="gemini-pulse-text success">✓ Detectado!</span>}
+                        {geminiStatus === 'error' && <span className="gemini-pulse-text error">❌ Erro no scanner</span>}
+                        {geminiStatus === 'idle' && <span className="gemini-pulse-text idle">Gemini Vision AI Ativo</span>}
+                      </div>
+                    </div>
+                  )}
+                  {isCameraActive && aiEngine === 'teachable' && <div className="device-scanner-overlay"></div>}
                   
                   {!isCameraActive && (
                     <div className="camera-placeholder">
@@ -1240,12 +1464,32 @@ function App() {
                     </div>
                   )}
 
-                  {isCameraActive && prediction && prediction.probability > 0.5 && db.some(item => item.className.toLowerCase() === prediction.className.toLowerCase().trim()) && (
+                  {isCameraActive && aiEngine === 'teachable' && prediction && prediction.probability > 0.5 && db.some(item => item.className.toLowerCase() === prediction.className.toLowerCase().trim()) && (
                     <div className="device-prediction-overlay">
                       Identificado: {prediction.className} ({(prediction.probability * 100).toFixed(0)}%)
                     </div>
                   )}
                 </div>
+
+                {isCameraActive && aiEngine === 'gemini' && (
+                  <div className="gemini-control-panel" style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {geminiScanMode === 'manual' ? (
+                      <button 
+                        className={`btn-action-primary gemini-scan-btn ${isProcessingGemini ? 'loading' : ''}`}
+                        onClick={scanWithGemini}
+                        disabled={isProcessingGemini}
+                        style={{ width: '100%', padding: '12px', fontSize: '1rem', borderRadius: '14px', backgroundColor: 'var(--accent)', color: '#060913', fontWeight: 'bold' }}
+                      >
+                        {isProcessingGemini ? '🔍 Analisando Imagem...' : '📷 Escanear Agora (Ou Pressione Espaço)'}
+                      </button>
+                    ) : (
+                      <div className="gemini-auto-indicator" style={{ width: '100%', padding: '12px', textAlign: 'center', borderRadius: '14px', backgroundColor: 'rgba(14, 165, 233, 0.1)', border: '1px dashed rgba(14, 165, 233, 0.3)', color: 'var(--accent)', fontSize: '0.95rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                        <span className="sync-indicator pulse-dot" style={{ backgroundColor: 'var(--accent)', position: 'relative', transform: 'none', top: 'auto', left: 'auto', display: 'inline-block' }}></span>
+                        🔄 Escaneando automaticamente a cada 4 segundos...
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="device-monitor-footer" style={{ marginTop: '1rem' }}>
                   {lastScannedItems.length === 0 ? (
@@ -1282,6 +1526,122 @@ function App() {
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE CONFIGURAÇÕES DE IA */}
+      {isAiSettingsOpen && (
+        <div className="modal-overlay" onClick={() => setIsAiSettingsOpen(false)}>
+          <div className="modal-content glass-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>⚙️ Configurações da IA de Visão</h2>
+              <button className="modal-close-btn" onClick={() => setIsAiSettingsOpen(false)}>×</button>
+            </div>
+            
+            <div className="modal-body">
+              <div className="form-group" style={{ marginBottom: '1.5rem' }}>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>Motor de IA Ativo</label>
+                <div className="ai-engine-tabs" style={{ display: 'flex', gap: '10px' }}>
+                  <button 
+                    className={`ai-engine-tab ${aiEngine === 'teachable' ? 'active' : ''}`}
+                    onClick={() => {
+                      setAiEngine('teachable');
+                      localStorage.setItem('visioncart_ai_engine', 'teachable');
+                      showToast("🤖 Motor de IA: Teachable Machine (Local)");
+                    }}
+                    style={{ flex: 1, padding: '10px', borderRadius: '10px', border: '1px solid var(--border-color)', background: aiEngine === 'teachable' ? 'var(--accent)' : 'transparent', color: aiEngine === 'teachable' ? '#060913' : 'var(--text-primary)', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    Teachable Machine (Local)
+                  </button>
+                  <button 
+                    className={`ai-engine-tab ${aiEngine === 'gemini' ? 'active' : ''}`}
+                    onClick={() => {
+                      setAiEngine('gemini');
+                      localStorage.setItem('visioncart_ai_engine', 'gemini');
+                      showToast("✨ Motor de IA: Gemini 1.5 Flash (Nuvem)");
+                    }}
+                    style={{ flex: 1, padding: '10px', borderRadius: '10px', border: '1px solid var(--border-color)', background: aiEngine === 'gemini' ? 'var(--accent)' : 'transparent', color: aiEngine === 'gemini' ? '#060913' : 'var(--text-primary)', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    Gemini 1.5 Flash (Nuvem)
+                  </button>
+                </div>
+              </div>
+
+              {aiEngine === 'gemini' ? (
+                <div className="gemini-settings-form slide-in">
+                  <div className="form-group" style={{ marginBottom: '1.5rem' }}>
+                    <label htmlFor="gemini-key" style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>Chave de API do Gemini (Google AI Studio)</label>
+                    <input 
+                      id="gemini-key"
+                      type="password" 
+                      className="form-input" 
+                      placeholder="Insira sua API Key do Gemini"
+                      value={geminiApiKey}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setGeminiApiKey(val);
+                        localStorage.setItem('visioncart_gemini_api_key', val);
+                      }}
+                      style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'rgba(255,255,255,0.05)', color: 'white' }}
+                    />
+                    <small className="help-text" style={{ display: 'block', marginTop: '6px', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+                      Obtenha uma chave gratuita no <a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>Google AI Studio</a>. Salva localmente de forma segura.
+                    </small>
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: '1rem' }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>Modo de Escaneamento</label>
+                    <div className="ai-engine-tabs" style={{ display: 'flex', gap: '10px' }}>
+                      <button 
+                        className={`ai-engine-tab ${geminiScanMode === 'manual' ? 'active' : ''}`}
+                        onClick={() => {
+                          setGeminiScanMode('manual');
+                          localStorage.setItem('visioncart_gemini_scan_mode', 'manual');
+                          showToast("Modo: Escaneamento Manual (Botão ou Espaço)");
+                        }}
+                        style={{ flex: 1, padding: '10px', borderRadius: '10px', border: '1px solid var(--border-color)', background: geminiScanMode === 'manual' ? 'var(--accent)' : 'transparent', color: geminiScanMode === 'manual' ? '#060913' : 'var(--text-primary)', fontWeight: 'bold', cursor: 'pointer' }}
+                      >
+                        Manual (Clique / Espaço)
+                      </button>
+                      <button 
+                        className={`ai-engine-tab ${geminiScanMode === 'auto' ? 'active' : ''}`}
+                        onClick={() => {
+                          setGeminiScanMode('auto');
+                          localStorage.setItem('visioncart_gemini_scan_mode', 'auto');
+                          showToast("Modo: Autoscanner a cada 4s");
+                        }}
+                        style={{ flex: 1, padding: '10px', borderRadius: '10px', border: '1px solid var(--border-color)', background: geminiScanMode === 'auto' ? 'var(--accent)' : 'transparent', color: geminiScanMode === 'auto' ? '#060913' : 'var(--text-primary)', fontWeight: 'bold', cursor: 'pointer' }}
+                      >
+                        Autoscanner (A cada 4s)
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="teachable-settings-info slide-in" style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <p>O Teachable Machine roda localmente usando a sua webcam e o modelo treinado.</p>
+                  <p><strong>Limitação:</strong> Identifica apenas um objeto por vez no enquadramento principal.</p>
+                  <div className="form-group">
+                    <label htmlFor="tm-url" style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text-primary)' }}>URL do Modelo Teachable Machine</label>
+                    <input 
+                      id="tm-url"
+                      type="text" 
+                      className="form-input" 
+                      value={modelUrl}
+                      onChange={(e) => setModelUrl(e.target.value)}
+                      style={{ width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'rgba(255,255,255,0.05)', color: 'white' }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-footer" style={{ marginTop: '2rem', display: 'flex', justifyContent: 'flex-end' }}>
+              <button className="btn-action-primary" onClick={() => setIsAiSettingsOpen(false)} style={{ padding: '10px 24px', borderRadius: '10px' }}>
+                Salvar e Fechar
+              </button>
+            </div>
           </div>
         </div>
       )}
