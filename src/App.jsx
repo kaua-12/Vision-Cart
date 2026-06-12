@@ -206,7 +206,7 @@ function App() {
     return () => {
       ws.close();
     };
-  }, [currentRoute, deviceCartId, pairedCartId]);
+  }, [currentRoute, deviceCartId]);
 
   // Carregar Modelo Teachable Machine
   useEffect(() => {
