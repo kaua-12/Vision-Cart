@@ -11,7 +11,7 @@ function App() {
   const [prediction, setPrediction] = useState(null);
   
   // Roteamento e Estados de Conexão WebSocket
-  const [currentRoute, setCurrentRoute] = useState(window.location.pathname);
+  const [currentRoute, setCurrentRoute] = useState(window.location.pathname + window.location.search);
   const [wsConnected, setWsConnected] = useState(false);
   const [isPaired, setIsPaired] = useState(false);
 
@@ -90,7 +90,7 @@ function App() {
   // Monitor de popstate para roteamento nativo
   useEffect(() => {
     const handlePopState = () => {
-      setCurrentRoute(window.location.pathname);
+      setCurrentRoute(window.location.pathname + window.location.search);
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -149,11 +149,29 @@ function App() {
           case 'user_disconnected':
             setIsPaired(false);
             setPairedCartId(null);
+            clearCart();
+            if (isApp) {
+              window.history.pushState({}, '', '/app');
+              setCurrentRoute('/app');
+              setAppTab('home');
+            } else {
+              window.history.pushState({}, '', '/');
+              setCurrentRoute('/');
+            }
             showToast('🔌 Cliente desconectou do carrinho.');
             break;
           case 'cart_disconnected':
             setIsPaired(false);
             setPairedCartId(null);
+            clearCart();
+            if (isApp) {
+              window.history.pushState({}, '', '/app');
+              setCurrentRoute('/app');
+              setAppTab('home');
+            } else {
+              window.history.pushState({}, '', '/');
+              setCurrentRoute('/');
+            }
             showToast('🔌 O totem do carrinho foi desconectado.');
             break;
           case 'product_scanned':
@@ -188,7 +206,7 @@ function App() {
     return () => {
       ws.close();
     };
-  }, [currentRoute, deviceCartId, pairedCartId, window.location.search]);
+  }, [currentRoute, deviceCartId, pairedCartId]);
 
   // Carregar Modelo Teachable Machine
   useEffect(() => {
@@ -388,8 +406,9 @@ function App() {
   };
 
   const handlePairSuccess = (detectedCartId) => {
-    window.history.pushState({}, '', `/app?cartId=${detectedCartId}`);
-    setCurrentRoute(`/app`);
+    const path = `/app?cartId=${detectedCartId}`;
+    window.history.pushState({}, '', path);
+    setCurrentRoute(path);
     setPairedCartId(detectedCartId);
     setIsPaired(true);
     showToast(`🎉 Conectado com sucesso ao ${AVAILABLE_CARTS.find(c => c.id === detectedCartId)?.name || detectedCartId}!`);
@@ -766,12 +785,18 @@ Exemplo de resposta esperada: ["Nescau", "Pringles"]`;
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'disconnect_request' }));
     }
-    window.history.pushState({}, '', '/app');
-    setCurrentRoute('/app');
+    const isMobile = currentRoute.startsWith('/app') || currentRoute.startsWith('/mobile');
+    if (isMobile) {
+      window.history.pushState({}, '', '/app');
+      setCurrentRoute('/app');
+      setAppTab('home');
+    } else {
+      window.history.pushState({}, '', '/');
+      setCurrentRoute('/');
+    }
     setPairedCartId(null);
     setIsPaired(false);
     clearCart();
-    setAppTab('home');
     showToast("🔌 Carrinho despareado com sucesso.");
   };
 
@@ -791,7 +816,7 @@ Exemplo de resposta esperada: ["Nescau", "Pringles"]`;
           <div className="app-mobile-shell">
             {/* Header Mobile */}
             <header className="app-header glass-panel mobile-header">
-              <div className="header-logo" onClick={() => navigate('/app')}>
+              <div className="header-logo" onClick={() => { window.history.pushState({}, '', '/app'); setCurrentRoute('/app'); }}>
                 <span className="logo-emoji">📱</span>
                 <span className="logo-text">VisionCart Mobile</span>
               </div>
@@ -910,8 +935,9 @@ Exemplo de resposta esperada: ["Nescau", "Pringles"]`;
                                   className="btn-action-primary btn-pair-device-small"
                                   style={{ backgroundColor: c.color, color: '#060913', fontSize: '0.85rem', padding: '6px 12px', marginTop: '10px' }}
                                   onClick={() => {
-                                    window.history.pushState({}, '', `/app?cartId=${c.id}`);
-                                    setCurrentRoute(`/app`);
+                                    const path = `/app?cartId=${c.id}`;
+                                    window.history.pushState({}, '', path);
+                                    setCurrentRoute(path);
                                     setPairedCartId(c.id);
                                   }}
                                 >
