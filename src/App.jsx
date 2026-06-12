@@ -25,7 +25,7 @@ function App() {
   const [toastMessage, setToastMessage] = useState(null); // Mensagens de toast
   const [cameraFailed, setCameraFailed] = useState(false); // Falha de inicialização da câmera
   const [aiEngine, setAiEngine] = useState(() => localStorage.getItem('visioncart_ai_engine') || 'teachable');
-  const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem('visioncart_gemini_api_key') || '');
+  const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem('visioncart_gemini_api_key') || import.meta.env.VITE_GEMINI_API_KEY || '');
   const [isProcessingGemini, setIsProcessingGemini] = useState(false);
   const [geminiScanMode, setGeminiScanMode] = useState(() => localStorage.getItem('visioncart_gemini_scan_mode') || 'manual');
   const [isAiSettingsOpen, setIsAiSettingsOpen] = useState(false);
