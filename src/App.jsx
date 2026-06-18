@@ -637,8 +637,17 @@ Exemplo de resposta esperada: ["Nescau", "Pringles"]`;
           let scannedAny = false;
           const itemsToScan = [];
 
+          const normalizeStr = (str) => {
+            if (!str) return "";
+            return str
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .toLowerCase()
+              .trim();
+          };
+
           detectedClassNames.forEach(className => {
-            const dbItem = db.find(item => item.className.toLowerCase() === className.trim().toLowerCase());
+            const dbItem = db.find(item => normalizeStr(item.className) === normalizeStr(className));
             if (dbItem) {
               itemsToScan.push(dbItem);
               scannedAny = true;
