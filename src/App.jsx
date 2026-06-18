@@ -559,7 +559,7 @@ Exemplo de resposta esperada: ["Nescau", "Pringles"]`;
 
       let response;
       let success = false;
-      const models = ['gemini-flash-latest', 'gemini-1.5-flash-8b', 'gemini-1.5-flash'];
+      const models = ['gemini-flash-latest', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite'];
       
       for (const model of models) {
         let retries = 2;
