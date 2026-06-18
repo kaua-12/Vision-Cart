@@ -558,60 +558,73 @@ Não adicione explicações, blocos de código markdown ou texto extra. Retorne 
 Exemplo de resposta esperada: ["Nescau", "Pringles"]`;
 
       let response;
-      let retries = 3;
-      let retryDelay = 1000;
+      let success = false;
+      const models = ['gemini-flash-latest', 'gemini-1.5-flash-8b', 'gemini-1.5-flash'];
       
-      for (let i = 0; i < retries; i++) {
-        try {
-          response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              contents: [
-                {
-                  parts: [
-                    { text: promptText },
-                    {
-                      inlineData: {
-                        mimeType: 'image/jpeg',
-                        data: base64Data
+      for (const model of models) {
+        let retries = 2;
+        let retryDelay = 800;
+        
+        for (let i = 0; i < retries; i++) {
+          try {
+            console.log(`[Gemini] Tentando modelo: ${model} (Tentativa ${i + 1} de ${retries})`);
+            response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                contents: [
+                  {
+                    parts: [
+                      { text: promptText },
+                      {
+                        inlineData: {
+                          mimeType: 'image/jpeg',
+                          data: base64Data
+                        }
                       }
-                    }
-                  ]
+                    ]
+                  }
+                ],
+                generationConfig: {
+                  responseMimeType: 'application/json'
                 }
-              ],
-              generationConfig: {
-                responseMimeType: 'application/json'
+              })
+            });
+
+            if (response.ok) {
+              success = true;
+              break;
+            }
+
+            // Se for erro temporário de servidor (503) ou cota (429), tenta novamente ou muda de modelo
+            if (response.status === 503 || response.status === 429) {
+              console.warn(`[Gemini] Modelo ${model} retornou status ${response.status}.`);
+              if (i < retries - 1) {
+                await new Promise(resolve => setTimeout(resolve, retryDelay));
+                retryDelay *= 1.5;
+                continue;
               }
-            })
-          });
-
-          if (response.ok) {
-            break; // Sucesso, sai do loop
-          }
-
-          // Se for erro temporário de servidor (503) ou excesso de requisições (429), tenta novamente com delay
-          if (response.status === 503 || response.status === 429) {
-            console.warn(`[Gemini] Status recebido: ${response.status}. Tentativa ${i + 1} de ${retries}. Tentando novamente em ${retryDelay}ms...`);
+            } else {
+              // Outros erros de cliente (como API Key inválida) não devem ser retentados
+              const errText = await response.text();
+              throw new Error(`Erro na API (${model}): ${response.status} - ${errText}`);
+            }
+          } catch (err) {
+            console.warn(`[Gemini] Falha no modelo ${model}:`, err);
+            if (i === retries - 1 && model === models[models.length - 1]) {
+              throw err; // Só joga o erro final se for o último modelo na lista e falhar todas as vezes
+            }
             if (i < retries - 1) {
               await new Promise(resolve => setTimeout(resolve, retryDelay));
-              retryDelay *= 1.5; // Backoff exponencial simples
-              continue;
+              retryDelay *= 1.5;
             }
           }
-          
-          // Se for outro erro que não deva ser retentado, lança o erro diretamente
-          const errText = await response.text();
-          throw new Error(`Erro na API: ${response.status} - ${errText}`);
-        } catch (err) {
-          if (i === retries - 1) {
-            throw err; // Lança o erro se todas as tentativas falharem
-          }
-          console.warn(`[Gemini] Erro de conexão (tentativa ${i + 1}). Tentando novamente em ${retryDelay}ms...`, err);
-          await new Promise(resolve => setTimeout(resolve, retryDelay));
-          retryDelay *= 1.5;
+        }
+        
+        if (success) {
+          break; // Sai do loop de modelos se algum deu sucesso
         }
       }
 
