@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VisionCart - Documentação do Projeto</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      color: #333333;
+      max-width: 800px;
+      margin: 40px auto;
+      padding: 0 20px;
+    }
+    h1 {
+      font-size: 28px;
+      color: #0b5394;
+      border-bottom: 2px solid #0b5394;
+      padding-bottom: 8px;
+      margin-top: 40px;
+    }
+    h2 {
+      font-size: 20px;
+      color: #351c75;
+      border-bottom: 1px solid #cccccc;
+      padding-bottom: 6px;
+      margin-top: 30px;
+    }
+    h3 {
+      font-size: 16px;
+      color: #741b47;
+      margin-top: 20px;
+    }
+    p, li {
+      font-size: 14px;
+      text-align: justify;
+    }
+    ul, ol {
+      margin-left: 20px;
+    }
+    li {
+      margin-bottom: 8px;
+    }
+    code {
+      font-family: Consolas, "Courier New", Courier, monospace;
+      background-color: #f3f3f3;
+      padding: 2px 4px;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    pre {
+      font-family: Consolas, "Courier New", Courier, monospace;
+      background-color: #f3f3f3;
+      border: 1px solid #dddddd;
+      border-left: 4px solid #0b5394;
+      padding: 12px;
+      overflow-x: auto;
+      border-radius: 4px;
+    }
+    pre code {
+      background-color: transparent;
+      padding: 0;
+      border-radius: 0;
+      font-size: 13px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid #cccccc;
+      padding: 10px;
+      text-align: left;
+    }
+    th {
+      background-color: #f3f3f3;
+      font-weight: bold;
+    }
+    .text-center {
+      text-align: center;
+    }
+    .hr-divider {
+      border: 0;
+      border-top: 1px dashed #999999;
+      margin: 40px 0;
+    }
+    .tip-box {
+      background-color: #e6f7ff;
+      border-left: 4px solid #1890ff;
+      padding: 12px 16px;
+      margin: 20px 0;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+
+  <div style="text-align: center; margin-bottom: 40px;">
+    <h1 style="border: none; color: #0b5394; font-size: 32px; margin-bottom: 10px;">VisionCart</h1>
+    <h3 style="color: #666666; font-size: 18px; font-weight: normal; margin-top: 0;">Sistema de Checkout Autônomo com Visão Computacional</h3>
+    <p class="text-center" style="font-style: italic; color: #888888;">Documentação de Especificação Técnica e Funcional do MVP</p>
+  </div>
+
+  <hr class="hr-divider">
+
+  <h2>1. Visão Geral do Projeto</h2>
+  <p>O <strong>VisionCart</strong> é um protótipo funcional de carrinho de compras inteligente projetado para eliminar as filas tradicionais de supermercados. Através de um sistema integrado em tempo real, o projeto une visão computacional baseada em Inteligência Artificial no monitor do carrinho e gerenciamento do carrinho com pagamento integrado no dispositivo móvel do usuário.</p>
+
+  <h3>1.1. O Problema</h3>
+  <p>O processo tradicional de checkout em supermercados gera atrito, perda de tempo em filas e custos operacionais elevados com atendentes físicos.</p>
+
+  <h3>1.2. A Solução</h3>
+  <p>O VisionCart descentraliza a leitura de código de barras e o pagamento. Um totem/tablet instalado fisicamente no próprio carrinho de compras atua como um scanner inteligente guiado por câmera e IA (reconhecendo produtos visualmente). Esse monitor transmite instantaneamente os itens detectados via conexões bidirecionais (WebSockets) para o aplicativo web executado no celular pessoal do cliente. O cliente realiza o gerenciamento das quantidades e o pagamento (via Pix, cartão de crédito ou carteiras digitais) diretamente na tela de seu smartphone, saindo da loja sem enfrentar filas de caixa.</p>
+
+  <hr class="hr-divider">
+
+  <h2>2. Arquitetura do Sistema</h2>
+  <p>O sistema utiliza uma arquitetura unificada de página única (SPA) com React para simplificar o deploy e garantir sincronismo instantâneo de estados.</p>
+
+  <pre>
++-------------------------------------------------------------+
+|                       SERVIDOR NODE.JS                      |
+|           Serviço Estático & WebSocket Hub (ws)             |
++------------------------------+------------------------------+
+                               |
+            Sincronização Bidirecional em Tempo Real
+                               |
+       +-----------------------+-----------------------+
+       |                                               |
++------v----------------------+                 +------v----------------------+
+|     VISIONCART MONITOR      |                 |      VISIONCART APP         |
+|  (Totem do Carrinho - Rota  |                 | (Celular do Cliente - Rota  |
+|       Principal `/`)        |                 |      `/app` ou `/mobile`)   |
+|                             |                 |                             |
+|  - Câmera do Totem          |                 |  - Scanner de QR Code       |
+|  - Reconhecimento de        |                 |  - Visualização de Itens    |
+|    Imagem Local (TensorFlow)|                 |  - Ajuste de Quantidade     |
+|  - Vision AI Multimodal     |                 |  - Checkout & Pagamento     |
+|    (API Gemini Cloud)       |                 |    (Simulado Pix/Cartão)    |
+|  - Exibição de QR Code      |                 |  - Gestão de Perfil         |
++-----------------------------+                 +-----------------------------+
+  </pre>
+
+  <h3>2.1. Frontend (React + Vite)</h3>
+  <p>O aplicativo web é responsivo e divide-se em dois modos principais baseados em rotas:</p>
+  <ul>
+    <li><strong>Visualização do Monitor/Totem (Rota <code>/</code>):</strong> Exibe a câmera de monitoramento do carrinho inteligente, os seletores de motor de inteligência artificial, as configurações de credenciais de nuvem e o QR Code dinâmico para pareamento inicial.</li>
+    <li><strong>Visualização do Aplicativo do Cliente (Rotas <code>/app</code> ou <code>/mobile</code>):</strong> Funciona como uma interface mobile nativa com navegação em abas (Início, Carrinho, Pagamento e Perfil), leitor de QR Code para pareamento físico e interface de finalização de compra.</li>
+  </ul>
+
+  <h3>2.2. Backend (Node.js + Express + WS)</h3>
+  <p>O servidor backend atua em duas frentes:</p>
+  <ol>
+    <li><strong>Distribuição de Arquivos:</strong> Serve o build estático otimizado gerado pelo Vite.</li>
+    <li><strong>WebSocket Server:</strong> Estabelece conexões persistentes entre o totem e o celular do cliente. Ele mantém um banco de dados em memória (<code>Map</code>) que vincula o ID do carrinho (<code>cartId</code>) a um par de conexões: <code>{ cartSocket, phoneSocket }</code>. Qualquer evento gerado por um lado (como a detecção de um produto pelo totem) é imediatamente encaminhado para o seu correspondente móvel.</li>
+  </ol>
+
+  <hr class="hr-divider">
+
+  <h2>3. Fluxo de Pareamento e Funcionamento</h2>
+  <p>O fluxo operacional garante uma experiência fluida para o cliente:</p>
+
+  <pre>
+[Cliente inicia] --> [Escaneia QR Code do Totem] --> [WebSocket conecta Celular e Totem]
+                         |
+                         v
+[Coloca produto no Totem] --> [IA detecta o produto] --> [Envia via WS para o Celular]
+                         |
+                         v
+[Finaliza no Celular] --> [Realiza Pagamento] --> [Totem despareia para o próximo uso]
+  </pre>
+
+  <ol>
+    <li><strong>Geração do QR Code:</strong> Ao iniciar, o totem exibe um QR Code que encapsula o seu respectivo identificador exclusivo (ex: <code>cart-042</code>) e a URL de conexão do aplicativo móvel (ex: <code>https://meusite.com/app?cartId=cart-042</code>).</li>
+    <li><strong>Escaneamento de Sincronismo:</strong> O cliente aponta a câmera do smartphone na tela do totem. O leitor integrado de QR Code do aplicativo móvel (<code>jsQR</code> carregado dinamicamente) extrai o ID do carrinho.</li>
+    <li><strong>Mapeamento de Sockets:</strong> O celular conecta-se no WebSocket do servidor e registra-se como <code>register_phone</code> para aquele <code>cartId</code>. O totem, que já estava registrado como <code>register_cart</code>, recebe um evento informando que o cliente conectou. O pareamento está estabelecido.</li>
+    <li><strong>Reconhecimento Visual de Produtos:</strong> O cliente deposita um item no carrinho físico. A câmera acoplada no totem captura o frame, analisa-o com Inteligência Artificial e identifica o produto.</li>
+    <li><strong>Transmissão em Tempo Real:</strong> O totem envia a mensagem <code>product_scanned</code> com o payload do item detectado (nome, preço, peso e emoji) para o servidor, que o repassa ao celular correspondente. O celular emite um toast e atualiza o estado de contagem e cálculo financeiro do carrinho virtual.</li>
+    <li><strong>Pagamento Autônomo:</strong> Na aba de checkout, o cliente seleciona a forma de pagamento (Cartão, Pix ou Carteiras Digitais) e confirma a operação.</li>
+    <li><strong>Limpeza e Desconexão:</strong> Após a aprovação do pagamento, o aplicativo envia um pedido de encerramento (<code>disconnect_request</code>). O servidor limpa as referências de conexão daquele <code>cartId</code>, remove o estado do carrinho no celular e redefine o totem, que volta a exibir o QR Code inicial de pareamento.</li>
+  </ol>
+
+  <hr class="hr-divider">
+
+  <h2>4. Motores de Inteligência Artificial</h2>
+  <p>O VisionCart oferece flexibilidade técnica ao disponibilizar dois motores de IA para o processamento de imagem em tempo real:</p>
+
+  <h3>4.1. Teachable Machine (Classificação Local)</h3>
+  <ul>
+    <li><strong>Tecnologia:</strong> Baseado no framework TensorFlow.js e no serviço Teachable Machine da Google.</li>
+    <li><strong>Processamento:</strong> 100% no cliente (client-side), sem dependência de rede externa para envio de imagens.</li>
+    <li><strong>Mecanismo de Confiança:</strong> Utiliza um acumulador de probabilidade. Um produto precisa aparecer por pelo menos 3 frames consecutivos com probabilidade superior a 20% para ser registrado no celular. Um cooldown de 3 segundos impede duplicidade acidental imediata de leitura. Se o "Fundo" (carrinho vazio ou fundo) for o elemento mais provável (&gt; 65%), os acumuladores dos produtos são resetados.</li>
+  </ul>
+
+  <h3>4.2. Gemini 1.5 Flash (Classificação e Multimodalidade na Nuvem)</h3>
+  <ul>
+    <li><strong>Tecnologia:</strong> Integração direta com a API da Google Generative AI (Modelos Multimodais).</li>
+    <li><strong>Configurações de Execução:</strong> Oferece dois modos configuráveis:
+      <ul>
+        <li><strong>Manual (Básico):</strong> O usuário aciona um botão físico ou pressiona a barra de espaço para capturar o frame da câmera e disparar a análise do Gemini.</li>
+        <li><strong>Automático (Autônomo):</strong> O sistema captura o frame e chama a API a cada 4 segundos automaticamente.</li>
+      </ul>
+    </li>
+    <li><strong>Engenharia de Prompt e Resposta:</strong> O sistema tira um instantâneo da webcam em formato JPEG base64 e envia junto a um prompt estrito de sistema. A chamada configura o parâmetro <code>responseMimeType: 'application/json'</code> da API (especificação REST v1beta) para obrigar o Gemini a retornar estritamente um array JSON contendo as chaves de classe dos itens identificados na imagem.</li>
+  </ul>
+
+  <hr class="hr-divider">
+
+  <h2>5. Especificações Técnicas de Banco de Dados</h2>
+  <p>Os dados dos produtos são estruturados no arquivo <code>src/database.json</code>. Cada produto cadastrado possui a seguinte assinatura JSON:</p>
+
+  <pre><code>[
+  {
+    "className": "Pringles",
+    "name": "Batata Pringles Original",
+    "price": 14.50,
+    "image": "🥔",
+    "weight": "114g",
+    "desc": "Batata frita crocante original"
+  }
+]</code></pre>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Atributo</th>
+        <th>Tipo</th>
+        <th>Descrição</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>className</strong></td>
+        <td>String</td>
+        <td>Identificador usado pelos classificadores de imagem do Teachable Machine e Gemini.</td>
+      </tr>
+      <tr>
+        <td><strong>name</strong></td>
+        <td>String</td>
+        <td>Nome comercial exibido ao cliente no aplicativo celular.</td>
+      </tr>
+      <tr>
+        <td><strong>price</strong></td>
+        <td>Number</td>
+        <td>Preço unitário numérico para cálculo de subtotal.</td>
+      </tr>
+      <tr>
+        <td><strong>image</strong></td>
+        <td>String</td>
+        <td>Emoji representativo do produto para design responsivo minimalista.</td>
+      </tr>
+      <tr>
+        <td><strong>weight</strong></td>
+        <td>String</td>
+        <td>Peso líquido ou volume do item para exibição de detalhes.</td>
+      </tr>
+      <tr>
+        <td><strong>desc</strong></td>
+        <td>String</td>
+        <td>Breve detalhamento do produto.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <hr class="hr-divider">
+
+  <h2>6. Procedimentos de Instalação e Execução</h2>
+
+  <h3>6.1. Requisitos Prévios</h3>
+  <ul>
+    <li><strong>Node.js</strong> instalado (versão 18 ou superior).</li>
+    <li><strong>NPM</strong> instalado.</li>
+  </ul>
+
+  <h3>6.2. Preparação do Ambiente</h3>
+  <ol>
+    <li>Extraia o código-fonte do projeto.</li>
+    <li>Instale as dependências executando o comando no terminal do diretório raiz do projeto:
+      <pre><code>npm install</code></pre>
+    </li>
+    <li>Crie um arquivo <code>.env.local</code> na raiz do projeto (para desenvolvimento) ou configure variáveis de ambiente no servidor de deploy (produção):
+      <pre><code>VITE_GEMINI_API_KEY=sua_chave_api_do_google_gemini_aqui</code></pre>
+    </li>
+  </ol>
+
+  <h3>6.3. Execução em Ambiente de Desenvolvimento</h3>
+  <p>Roda o servidor Vite local com suporte a recarregamento dinâmico (HMR) na porta padrão <code>5173</code>:</p>
+  <pre><code>npm run dev</code></pre>
+
+  <h3>6.4. Execução em Ambiente de Produção</h3>
+  <p>Para compilar e subir o servidor otimizado que serve os arquivos estáticos e controla a porta WebSocket na mesma rota HTTP:</p>
+  <ol>
+    <li>Compile os arquivos estáticos:
+      <pre><code>npm run build</code></pre>
+    </li>
+    <li>Inicialize o servidor backend:
+      <pre><code>npm start</code></pre>
+      <p style="font-size: 12px; color: #666666; margin-top: 4px;">*O servidor iniciará na porta padrão <code>5173</code> ou na porta designada pela variável de ambiente <code>PORT</code>.</p>
+    </li>
+  </ol>
+
+  <div class="tip-box">
+    <strong>💡 Dica Importante para Google Docs:</strong><br>
+    Abra este arquivo <code>DOCUMENTACAO.html</code> em qualquer navegador (Chrome, Edge, Firefox). Pressione <code>Ctrl + A</code> para selecionar tudo e, em seguida, <code>Ctrl + C</code> para copiar. Vá para o seu documento em branco no <strong>Google Docs</strong> e cole (<code>Ctrl + V</code>). A formatação com estilos de fonte, cores, margens, tabelas estruturadas e blocos de código será mantida perfeitamente!
+  </div>
+
+</body>
+</html>
